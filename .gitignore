@@ -1,0 +1,14 @@
+# Binary (top-level only)
+/qak
+/qak-arm64
+/qak-amd64
+
+# Database (rebuilt from vault)
+qak.db
+
+# macOS
+.DS_Store
+
+# Temp files
+/tmp/
+*.jsonl
