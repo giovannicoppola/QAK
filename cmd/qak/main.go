@@ -74,7 +74,6 @@ func obsidianURI(filename string) string {
 	return fmt.Sprintf("obsidian://open?vault=%s&file=%s", vaultName(), name)
 }
 
-// Read note body from vault (strips YAML frontmatter)
 func readNoteBody(filename string) string {
 	path := filepath.Join(vaultDir(), filename)
 	data, err := os.ReadFile(path)
@@ -134,14 +133,17 @@ func join(parts []string) string {
 	return strings.Join(nonEmpty, " · ")
 }
 
+func truncate(s string, max int) string {
+	if len(s) > max {
+		return s[:max] + "\n\n[truncated]"
+	}
+	return s
+}
+
 // Build an item where Enter = note text, Shift+Enter = open in Obsidian
 func makeItem(title, subtitle, filename, uid string) AlfredItem {
 	body := readNoteBody(filename)
-	// Truncate for clipboard if very long
-	clipText := body
-	if len(clipText) > 10000 {
-		clipText = clipText[:10000] + "\n\n[truncated]"
-	}
+	clipText := truncate(body, 10000)
 
 	return AlfredItem{
 		Title:    title,
@@ -153,6 +155,33 @@ func makeItem(title, subtitle, filename, uid string) AlfredItem {
 			"shift": {Arg: obsidianURI(filename), Subtitle: "⇧↵ Open in Obsidian"},
 		},
 	}
+}
+
+// -----------------------------------------------------------------------
+// Fuzzy multi-word WHERE clause builder
+// -----------------------------------------------------------------------
+// Splits query into words, builds:
+//   (col1 LIKE '%w1%' OR col2 LIKE '%w1%' ...) AND (col1 LIKE '%w2%' OR col2 LIKE '%w2%' ...)
+// Each word must match at least one column. Word order doesn't matter.
+
+func fuzzyWhere(query string, columns []string) (clause string, args []interface{}) {
+	words := strings.Fields(query)
+	if len(words) == 0 {
+		return "1=1", nil
+	}
+
+	var wordClauses []string
+	for _, word := range words {
+		like := "%" + word + "%"
+		var colClauses []string
+		for _, col := range columns {
+			colClauses = append(colClauses, col+" LIKE ?")
+			args = append(args, like)
+		}
+		wordClauses = append(wordClauses, "("+strings.Join(colClauses, " OR ")+")")
+	}
+	clause = strings.Join(wordClauses, " AND ")
+	return
 }
 
 // Tag prefixes for focused search
@@ -187,18 +216,18 @@ func parseQuery(raw string) (filter string, query string) {
 // -----------------------------------------------------------------------
 
 func searchDiseases(db *sql.DB, q string) []AlfredItem {
-	like := "%" + q + "%"
+	where, args := fuzzyWhere(q, []string{
+		"d.name", "d.filename", "CAST(d.omim AS TEXT)", "CAST(d.mondo AS TEXT)",
+	})
 	rows, err := db.Query(`
 		SELECT d.name, d.filename, d.n_patients_us, d.prevalence_per_100k, d.gwas_loci,
-		       d.lifetime_risk, d.omim,
-		       (SELECT COUNT(*) FROM disease_gene dg WHERE dg.gene_id = d.id),
+		       (SELECT COUNT(*) FROM disease_gene dg WHERE dg.disease_id = d.id),
 		       (SELECT COUNT(*) FROM disease_paper dp WHERE dp.disease_id = d.id),
 		       (SELECT COUNT(*) FROM disease_trial dt WHERE dt.disease_id = d.id)
 		FROM diseases d
-		WHERE d.name LIKE ? OR d.filename LIKE ?
-		      OR CAST(d.omim AS TEXT) LIKE ? OR CAST(d.mondo AS TEXT) LIKE ?
+		WHERE `+where+`
 		ORDER BY (SELECT COUNT(*) FROM disease_paper dp WHERE dp.disease_id = d.id) DESC
-		LIMIT 20`, like, like, like, like)
+		LIMIT 20`, args...)
 	if err != nil {
 		return nil
 	}
@@ -209,8 +238,7 @@ func searchDiseases(db *sql.DB, q string) []AlfredItem {
 		var name, filename string
 		var nUS, gwas, nGenes, nPapers, nTrials sql.NullInt64
 		var prev sql.NullFloat64
-		var risk, omim sql.NullString
-		rows.Scan(&name, &filename, &nUS, &prev, &gwas, &risk, &omim, &nGenes, &nPapers, &nTrials)
+		rows.Scan(&name, &filename, &nUS, &prev, &gwas, &nGenes, &nPapers, &nTrials)
 
 		sub := join([]string{
 			func() string {
@@ -244,17 +272,17 @@ func searchDiseases(db *sql.DB, q string) []AlfredItem {
 // -----------------------------------------------------------------------
 
 func searchGenes(db *sql.DB, q string) []AlfredItem {
-	like := "%" + q + "%"
+	where, args := fuzzyWhere(q, []string{
+		"g.symbol", "g.full_name", "g.filename", "g.therapeutic_notes",
+	})
 	rows, err := db.Query(`
 		SELECT g.symbol, g.filename, g.full_name, g.chromosome, g.protein_length,
-		       g.therapeutic_notes,
 		       (SELECT COUNT(*) FROM disease_gene dg WHERE dg.gene_id = g.id),
 		       (SELECT COUNT(*) FROM gene_paper gp WHERE gp.gene_id = g.id)
 		FROM genes g
-		WHERE g.symbol LIKE ? OR g.full_name LIKE ? OR g.filename LIKE ?
-		      OR g.therapeutic_notes LIKE ?
+		WHERE `+where+`
 		ORDER BY (SELECT COUNT(*) FROM gene_paper gp WHERE gp.gene_id = g.id) DESC
-		LIMIT 20`, like, like, like, like)
+		LIMIT 20`, args...)
 	if err != nil {
 		return nil
 	}
@@ -263,9 +291,9 @@ func searchGenes(db *sql.DB, q string) []AlfredItem {
 	var items []AlfredItem
 	for rows.Next() {
 		var symbol, filename string
-		var fullName, chrom, therNotes sql.NullString
+		var fullName, chrom sql.NullString
 		var protLen, nDiseases, nPapers sql.NullInt64
-		rows.Scan(&symbol, &filename, &fullName, &chrom, &protLen, &therNotes, &nDiseases, &nPapers)
+		rows.Scan(&symbol, &filename, &fullName, &chrom, &protLen, &nDiseases, &nPapers)
 
 		sub := join([]string{
 			orEmpty(fullName),
@@ -288,16 +316,17 @@ func searchGenes(db *sql.DB, q string) []AlfredItem {
 // -----------------------------------------------------------------------
 
 func searchPapers(db *sql.DB, q string) []AlfredItem {
-	like := "%" + q + "%"
+	where, args := fuzzyWhere(q, []string{
+		"p.citekey", "p.first_author", "p.title", "p.obs_summary",
+		"p.study_type", "p.journal", "p.filename",
+	})
 	rows, err := db.Query(`
 		SELECT p.citekey, p.filename, p.first_author, p.year, p.study_type,
 		       p.n_total, p.n_loci, p.obs_summary, p.obs_source, p.title, p.journal
 		FROM papers p
-		WHERE p.citekey LIKE ? OR p.first_author LIKE ? OR p.title LIKE ?
-		      OR p.obs_summary LIKE ? OR p.study_type LIKE ? OR p.journal LIKE ?
-		      OR p.filename LIKE ?
+		WHERE `+where+`
 		ORDER BY p.year DESC
-		LIMIT 20`, like, like, like, like, like, like, like)
+		LIMIT 20`, args...)
 	if err != nil {
 		return nil
 	}
@@ -341,30 +370,22 @@ func searchPapers(db *sql.DB, q string) []AlfredItem {
 			}(),
 		})
 
-		// For papers, the summary is the most useful quick-access text.
-		// Full note body available via shift modifier path, but default arg = summary.
 		summaryText := orEmpty(summary)
 		body := readNoteBody(filename)
 
-		// arg = summary if available, else full body
 		argText := summaryText
 		if argText == "" {
 			argText = body
 		}
-		if len(argText) > 10000 {
-			argText = argText[:10000] + "\n\n[truncated]"
-		}
+		argText = truncate(argText, 10000)
 
-		// largetype = summary + full body for deeper reading
 		largeText := ""
 		if summaryText != "" {
 			largeText = "SUMMARY:\n" + summaryText + "\n\n---\n\n" + body
 		} else {
 			largeText = body
 		}
-		if len(largeText) > 10000 {
-			largeText = largeText[:10000] + "\n\n[truncated]"
-		}
+		largeText = truncate(largeText, 10000)
 
 		item := AlfredItem{
 			Title:    "📄 " + displayTitle,
@@ -374,7 +395,7 @@ func searchPapers(db *sql.DB, q string) []AlfredItem {
 			Text:     &AlfredText{Copy: argText, Largetype: largeText},
 			Mods: map[string]AlfMod{
 				"shift": {Arg: obsidianURI(filename), Subtitle: "⇧↵ Open in Obsidian"},
-				"cmd":   {Arg: body, Subtitle: "⌘↵ Copy full note"},
+				"cmd":   {Arg: truncate(body, 10000), Subtitle: "⌘↵ Copy full note"},
 			},
 		}
 		items = append(items, item)
@@ -387,7 +408,11 @@ func searchPapers(db *sql.DB, q string) []AlfredItem {
 // -----------------------------------------------------------------------
 
 func searchTrials(db *sql.DB, q string) []AlfredItem {
-	like := "%" + q + "%"
+	where, args := fuzzyWhere(q, []string{
+		"ct.trial_name", "ct.drug", "ct.modality", "ct.company",
+		"ct.nct_id", "ct.primary_endpoint", "ct.indication_detail",
+		"ct.filename", "d.name",
+	})
 	rows, err := db.Query(`
 		SELECT ct.trial_name, ct.filename, ct.drug, ct.phase, ct.outcome,
 		       ct.status, ct.n_enrolled, ct.modality, ct.company,
@@ -396,13 +421,10 @@ func searchTrials(db *sql.DB, q string) []AlfredItem {
 		FROM clinical_trials ct
 		LEFT JOIN disease_trial dt ON ct.id = dt.trial_id
 		LEFT JOIN diseases d ON d.id = dt.disease_id
-		WHERE ct.trial_name LIKE ? OR ct.drug LIKE ? OR ct.modality LIKE ?
-		      OR ct.company LIKE ? OR ct.nct_id LIKE ? OR ct.primary_endpoint LIKE ?
-		      OR ct.indication_detail LIKE ? OR ct.filename LIKE ?
-		      OR d.name LIKE ?
+		WHERE `+where+`
 		GROUP BY ct.id
 		ORDER BY ct.trial_name
-		LIMIT 20`, like, like, like, like, like, like, like, like, like)
+		LIMIT 20`, args...)
 	if err != nil {
 		return nil
 	}
@@ -440,7 +462,9 @@ func searchTrials(db *sql.DB, q string) []AlfredItem {
 // -----------------------------------------------------------------------
 
 func searchStrategies(db *sql.DB, q string) []AlfredItem {
-	like := "%" + q + "%"
+	where, args := fuzzyWhere(q, []string{
+		"ts.name", "ts.modality", "ts.filename", "d.name", "g.symbol",
+	})
 	rows, err := db.Query(`
 		SELECT ts.name, ts.filename, ts.modality,
 		       GROUP_CONCAT(DISTINCT d.name) as diseases,
@@ -450,11 +474,10 @@ func searchStrategies(db *sql.DB, q string) []AlfredItem {
 		LEFT JOIN diseases d ON d.id = ds.disease_id
 		LEFT JOIN strategy_gene sg ON ts.id = sg.strategy_id
 		LEFT JOIN genes g ON g.id = sg.gene_id
-		WHERE ts.name LIKE ? OR ts.modality LIKE ? OR ts.filename LIKE ?
-		      OR d.name LIKE ? OR g.symbol LIKE ?
+		WHERE `+where+`
 		GROUP BY ts.id
 		ORDER BY ts.name
-		LIMIT 20`, like, like, like, like, like)
+		LIMIT 20`, args...)
 	if err != nil {
 		return nil
 	}
@@ -487,7 +510,9 @@ func searchStrategies(db *sql.DB, q string) []AlfredItem {
 // -----------------------------------------------------------------------
 
 func searchZettels(db *sql.DB, q string) []AlfredItem {
-	like := "%" + q + "%"
+	where, args := fuzzyWhere(q, []string{
+		"z.fact", "z.category", "z.filename", "d.name", "g.symbol",
+	})
 	rows, err := db.Query(`
 		SELECT z.fact, z.filename, z.category,
 		       GROUP_CONCAT(DISTINCT d.name) as diseases,
@@ -497,11 +522,10 @@ func searchZettels(db *sql.DB, q string) []AlfredItem {
 		LEFT JOIN diseases d ON d.id = dz.disease_id
 		LEFT JOIN zettel_gene zg ON z.id = zg.zettel_id
 		LEFT JOIN genes g ON g.id = zg.gene_id
-		WHERE z.fact LIKE ? OR z.category LIKE ? OR z.filename LIKE ?
-		      OR d.name LIKE ? OR g.symbol LIKE ?
+		WHERE `+where+`
 		GROUP BY z.id
 		ORDER BY z.fact
-		LIMIT 20`, like, like, like, like, like)
+		LIMIT 20`, args...)
 	if err != nil {
 		return nil
 	}
@@ -524,15 +548,12 @@ func searchZettels(db *sql.DB, q string) []AlfredItem {
 			orEmpty(genes),
 		})
 
-		// Zettels: the fact IS the key info, body has supporting detail
 		body := readNoteBody(filename)
 		argText := fact
 		if body != "" {
 			argText = fact + "\n\n" + body
 		}
-		if len(argText) > 10000 {
-			argText = argText[:10000]
-		}
+		argText = truncate(argText, 10000)
 
 		items = append(items, AlfredItem{
 			Title:    fact,
@@ -641,9 +662,9 @@ func main() {
 	total := len(items)
 	for i := range items {
 		if items[i].Subtitle != "" {
-			items[i].Subtitle = fmt.Sprintf("[%d/%d] %s", i+1, total, items[i].Subtitle)
+			items[i].Subtitle = fmt.Sprintf("%d/%d %s", i+1, total, items[i].Subtitle)
 		} else {
-			items[i].Subtitle = fmt.Sprintf("[%d/%d]", i+1, total)
+			items[i].Subtitle = fmt.Sprintf("%d/%d", i+1, total)
 		}
 	}
 
