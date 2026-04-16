@@ -42,7 +42,8 @@ type AlfredOutput struct {
 	Items []AlfredItem `json:"items"`
 }
 
-// Database path resolution
+// Paths
+
 func dbPath() string {
 	if p := os.Getenv("QAK_DB"); p != "" {
 		return p
@@ -52,7 +53,16 @@ func dbPath() string {
 		"Library/CloudStorage/OneDrive-RegeneronPharmaceuticals,Inc/MyScripts/myGitHubRepos/QAK/qak.db")
 }
 
-func vaultPath() string {
+func vaultDir() string {
+	if p := os.Getenv("QAK_VAULT_PATH"); p != "" {
+		return p
+	}
+	home, _ := os.UserHomeDir()
+	return filepath.Join(home,
+		"Library/CloudStorage/OneDrive-RegeneronPharmaceuticals,Inc/MyScripts/myGitHubRepos/gitVault/gitVault-notes")
+}
+
+func vaultName() string {
 	if p := os.Getenv("QAK_VAULT"); p != "" {
 		return p
 	}
@@ -61,7 +71,24 @@ func vaultPath() string {
 
 func obsidianURI(filename string) string {
 	name := strings.TrimSuffix(filename, ".md")
-	return fmt.Sprintf("obsidian://open?vault=%s&file=%s", vaultPath(), name)
+	return fmt.Sprintf("obsidian://open?vault=%s&file=%s", vaultName(), name)
+}
+
+// Read note body from vault (strips YAML frontmatter)
+func readNoteBody(filename string) string {
+	path := filepath.Join(vaultDir(), filename)
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return ""
+	}
+	content := string(data)
+	if strings.HasPrefix(content, "---") {
+		end := strings.Index(content[3:], "\n---")
+		if end != -1 {
+			content = strings.TrimSpace(content[end+7:])
+		}
+	}
+	return content
 }
 
 // Helper formatters
@@ -107,6 +134,27 @@ func join(parts []string) string {
 	return strings.Join(nonEmpty, " · ")
 }
 
+// Build an item where Enter = note text, Shift+Enter = open in Obsidian
+func makeItem(title, subtitle, filename, uid string) AlfredItem {
+	body := readNoteBody(filename)
+	// Truncate for clipboard if very long
+	clipText := body
+	if len(clipText) > 10000 {
+		clipText = clipText[:10000] + "\n\n[truncated]"
+	}
+
+	return AlfredItem{
+		Title:    title,
+		Subtitle: subtitle,
+		Arg:      clipText,
+		UID:      uid,
+		Text:     &AlfredText{Copy: clipText, Largetype: clipText},
+		Mods: map[string]AlfMod{
+			"shift": {Arg: obsidianURI(filename), Subtitle: "⇧↵ Open in Obsidian"},
+		},
+	}
+}
+
 // Tag prefixes for focused search
 var tagPrefixes = map[string]string{
 	"disease:":  "disease",
@@ -143,7 +191,7 @@ func searchDiseases(db *sql.DB, q string) []AlfredItem {
 	rows, err := db.Query(`
 		SELECT d.name, d.filename, d.n_patients_us, d.prevalence_per_100k, d.gwas_loci,
 		       d.lifetime_risk, d.omim,
-		       (SELECT COUNT(*) FROM disease_gene dg WHERE dg.disease_id = d.id),
+		       (SELECT COUNT(*) FROM disease_gene dg WHERE dg.gene_id = d.id),
 		       (SELECT COUNT(*) FROM disease_paper dp WHERE dp.disease_id = d.id),
 		       (SELECT COUNT(*) FROM disease_trial dt WHERE dt.disease_id = d.id)
 		FROM diseases d
@@ -186,13 +234,7 @@ func searchDiseases(db *sql.DB, q string) []AlfredItem {
 			fmt.Sprintf("%d genes, %d papers, %d trials", nGenes.Int64, nPapers.Int64, nTrials.Int64),
 		})
 
-		items = append(items, AlfredItem{
-			Title:    "🦠 " + name,
-			Subtitle: sub,
-			Arg:      obsidianURI(filename),
-			UID:      "disease:" + name,
-			Text:     &AlfredText{Copy: name, Largetype: name + "\n" + sub},
-		})
+		items = append(items, makeItem("🦠 "+name, sub, filename, "disease:"+name))
 	}
 	return items
 }
@@ -236,13 +278,7 @@ func searchGenes(db *sql.DB, q string) []AlfredItem {
 			fmt.Sprintf("%d diseases, %d papers", nDiseases.Int64, nPapers.Int64),
 		})
 
-		items = append(items, AlfredItem{
-			Title:    "🧬 " + symbol,
-			Subtitle: sub,
-			Arg:      obsidianURI(filename),
-			UID:      "gene:" + symbol,
-			Text:     &AlfredText{Copy: symbol, Largetype: symbol + "\n" + sub},
-		})
+		items = append(items, makeItem("🧬 "+symbol, sub, filename, "gene:"+symbol))
 	}
 	return items
 }
@@ -305,23 +341,41 @@ func searchPapers(db *sql.DB, q string) []AlfredItem {
 			}(),
 		})
 
+		// For papers, the summary is the most useful quick-access text.
+		// Full note body available via shift modifier path, but default arg = summary.
 		summaryText := orEmpty(summary)
-		largetype := displayTitle + "\n" + sub
+		body := readNoteBody(filename)
+
+		// arg = summary if available, else full body
+		argText := summaryText
+		if argText == "" {
+			argText = body
+		}
+		if len(argText) > 10000 {
+			argText = argText[:10000] + "\n\n[truncated]"
+		}
+
+		// largetype = summary + full body for deeper reading
+		largeText := ""
 		if summaryText != "" {
-			largetype += "\n\n" + summaryText
+			largeText = "SUMMARY:\n" + summaryText + "\n\n---\n\n" + body
+		} else {
+			largeText = body
+		}
+		if len(largeText) > 10000 {
+			largeText = largeText[:10000] + "\n\n[truncated]"
 		}
 
 		item := AlfredItem{
 			Title:    "📄 " + displayTitle,
 			Subtitle: sub,
-			Arg:      obsidianURI(filename),
+			Arg:      argText,
 			UID:      "paper:" + citekey,
-			Text:     &AlfredText{Copy: citekey, Largetype: largetype},
-		}
-		if summaryText != "" {
-			item.Mods = map[string]AlfMod{
-				"cmd": {Arg: summaryText, Subtitle: "⌘: Copy summary"},
-			}
+			Text:     &AlfredText{Copy: argText, Largetype: largeText},
+			Mods: map[string]AlfMod{
+				"shift": {Arg: obsidianURI(filename), Subtitle: "⇧↵ Open in Obsidian"},
+				"cmd":   {Arg: body, Subtitle: "⌘↵ Copy full note"},
+			},
 		}
 		items = append(items, item)
 	}
@@ -376,18 +430,7 @@ func searchTrials(db *sql.DB, q string) []AlfredItem {
 			orEmpty(diseases),
 		})
 
-		largetype := trialName + "\n" + sub
-		if s := orEmpty(endpoint); s != "" {
-			largetype += "\nEndpoint: " + s
-		}
-
-		items = append(items, AlfredItem{
-			Title:    "💊 " + trialName,
-			Subtitle: sub,
-			Arg:      obsidianURI(filename),
-			UID:      "trial:" + trialName,
-			Text:     &AlfredText{Copy: trialName, Largetype: largetype},
-		})
+		items = append(items, makeItem("💊 "+trialName, sub, filename, "trial:"+trialName))
 	}
 	return items
 }
@@ -434,13 +477,7 @@ func searchStrategies(db *sql.DB, q string) []AlfredItem {
 			}(),
 		})
 
-		items = append(items, AlfredItem{
-			Title:    "🎯 " + name,
-			Subtitle: sub,
-			Arg:      obsidianURI(filename),
-			UID:      "strategy:" + name,
-			Text:     &AlfredText{Copy: name, Largetype: name + "\n" + sub},
-		})
+		items = append(items, makeItem("🎯 "+name, sub, filename, "strategy:"+name))
 	}
 	return items
 }
@@ -487,12 +524,25 @@ func searchZettels(db *sql.DB, q string) []AlfredItem {
 			orEmpty(genes),
 		})
 
+		// Zettels: the fact IS the key info, body has supporting detail
+		body := readNoteBody(filename)
+		argText := fact
+		if body != "" {
+			argText = fact + "\n\n" + body
+		}
+		if len(argText) > 10000 {
+			argText = argText[:10000]
+		}
+
 		items = append(items, AlfredItem{
 			Title:    fact,
 			Subtitle: sub,
-			Arg:      obsidianURI(filename),
+			Arg:      argText,
 			UID:      "zettel:" + filename,
-			Text:     &AlfredText{Copy: fact, Largetype: fact},
+			Text:     &AlfredText{Copy: fact, Largetype: argText},
+			Mods: map[string]AlfMod{
+				"shift": {Arg: obsidianURI(filename), Subtitle: "⇧↵ Open in Obsidian"},
+			},
 		})
 	}
 	return items
@@ -511,7 +561,6 @@ func searchAll(db *sql.DB, q string) []AlfredItem {
 	items = append(items, searchStrategies(db, q)...)
 	items = append(items, searchZettels(db, q)...)
 
-	// Cap total results
 	if len(items) > 40 {
 		items = items[:40]
 	}
@@ -527,10 +576,13 @@ func main() {
 		fmt.Fprintf(os.Stderr, "Usage: qak <query>\n")
 		fmt.Fprintf(os.Stderr, "  Tags: disease: gene: paper: trial: strategy: zettel:\n")
 		fmt.Fprintf(os.Stderr, "  Short: d: g: p: t: s: z:\n")
+		fmt.Fprintf(os.Stderr, "\nActions:\n")
+		fmt.Fprintf(os.Stderr, "  Enter       → copy note text to clipboard\n")
+		fmt.Fprintf(os.Stderr, "  Cmd+L       → Large Type (full note)\n")
+		fmt.Fprintf(os.Stderr, "  Shift+Enter → open in Obsidian\n")
 		os.Exit(1)
 	}
 
-	// --zk flag for backwards compat with the zk Alfred keyword
 	raw := strings.Join(os.Args[1:], " ")
 	if strings.HasPrefix(raw, "--zk ") {
 		raw = "zk:" + raw[5:]
@@ -552,10 +604,9 @@ func main() {
 	if query == "" && filter == "" {
 		items = append(items, AlfredItem{
 			Title:    "Search QAK knowledge base…",
-			Subtitle: "Type freely, or use d: g: p: t: s: z: to filter by type",
+			Subtitle: "↵ copy text · ⇧↵ open Obsidian · ⌘L large type — Tags: d: g: p: t: s: z:",
 		})
 	} else if query == "" && filter != "" {
-		// Show hint for the filter
 		items = append(items, AlfredItem{
 			Title:    fmt.Sprintf("Search %ss…", filter),
 			Subtitle: fmt.Sprintf("Type a keyword after %s:", filter),
@@ -584,6 +635,16 @@ func main() {
 			Title:    "No results",
 			Subtitle: fmt.Sprintf("No matches for \"%s\"", query),
 		})
+	}
+
+	// Add x/N counter to each subtitle
+	total := len(items)
+	for i := range items {
+		if items[i].Subtitle != "" {
+			items[i].Subtitle = fmt.Sprintf("[%d/%d] %s", i+1, total, items[i].Subtitle)
+		} else {
+			items[i].Subtitle = fmt.Sprintf("[%d/%d]", i+1, total)
+		}
 	}
 
 	output := AlfredOutput{Items: items}
