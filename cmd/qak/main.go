@@ -570,17 +570,199 @@ func searchZettels(db *sql.DB, q string) []AlfredItem {
 }
 
 // -----------------------------------------------------------------------
+// Search: properties (explodes entity fields into individual items)
+// -----------------------------------------------------------------------
+
+type propRow struct {
+	entity   string // e.g. "ALS"
+	label    string // e.g. "incidence"
+	value    string // e.g. "2.0 /100k"
+	unit     string // appended to value for display
+	filename string
+	icon     string
+}
+
+func searchProperties(db *sql.DB, q string) []AlfredItem {
+	// Build property rows from diseases
+	var rows []propRow
+
+	diseaseRows, err := db.Query(`
+		SELECT name, filename, prevalence_per_100k, incidence_per_100k,
+		       n_patients_us, lifetime_risk, omim, mondo, orphanet,
+		       gwas_largest_n, gwas_loci, gwas_paper,
+		       wes_largest_n, wes_loci, wes_paper,
+		       heritability_twin, heritability_gwas
+		FROM diseases`)
+	if err == nil {
+		defer diseaseRows.Close()
+		for diseaseRows.Next() {
+			var name, filename string
+			var prev, incid sql.NullFloat64
+			var nUS, gwasN, gwasLoci, wesN, wesLoci sql.NullInt64
+			var risk, omim, mondo, orphanet sql.NullString
+			var gwasPaper, wesPaper, herTwin, herGwas sql.NullString
+			diseaseRows.Scan(&name, &filename, &prev, &incid, &nUS, &risk,
+				&omim, &mondo, &orphanet, &gwasN, &gwasLoci, &gwasPaper,
+				&wesN, &wesLoci, &wesPaper, &herTwin, &herGwas)
+
+			add := func(label, val, unit string) {
+				if val != "" {
+					rows = append(rows, propRow{name, label, val, unit, filename, "🦠"})
+				}
+			}
+			add("prevalence", fmtFloat(prev), " /100k")
+			add("incidence", fmtFloat(incid), " /100k")
+			add("US patients", fmtNum(nUS), "")
+			add("lifetime risk", orEmpty(risk), "")
+			add("OMIM", orEmpty(omim), "")
+			add("MONDO", orEmpty(mondo), "")
+			add("Orphanet", orEmpty(orphanet), "")
+			add("GWAS largest N", fmtNum(gwasN), "")
+			add("GWAS loci", fmtNum(gwasLoci), "")
+			add("GWAS paper", orEmpty(gwasPaper), "")
+			add("WES largest N", fmtNum(wesN), "")
+			add("WES loci", fmtNum(wesLoci), "")
+			add("WES paper", orEmpty(wesPaper), "")
+			add("heritability twin", orEmpty(herTwin), "")
+			add("heritability GWAS", orEmpty(herGwas), "")
+		}
+	}
+
+	// Gene properties
+	geneRows, err := db.Query(`
+		SELECT symbol, filename, full_name, chromosome, cytoband, protein_length
+		FROM genes`)
+	if err == nil {
+		defer geneRows.Close()
+		for geneRows.Next() {
+			var symbol, filename string
+			var fullName, chrom, cytoband sql.NullString
+			var protLen sql.NullInt64
+			geneRows.Scan(&symbol, &filename, &fullName, &chrom, &cytoband, &protLen)
+
+			add := func(label, val, unit string) {
+				if val != "" {
+					rows = append(rows, propRow{symbol, label, val, unit, filename, "🧬"})
+				}
+			}
+			add("full name", orEmpty(fullName), "")
+			add("chromosome", orEmpty(chrom), "")
+			add("cytoband", orEmpty(cytoband), "")
+			add("protein length", fmtNum(protLen), " aa")
+		}
+	}
+
+	// Paper properties
+	paperRows, err := db.Query(`
+		SELECT citekey, filename, study_type, first_author, year, journal,
+		       n_cases, n_controls, n_total, n_loci
+		FROM papers`)
+	if err == nil {
+		defer paperRows.Close()
+		for paperRows.Next() {
+			var citekey, filename string
+			var studyType, author, journal sql.NullString
+			var year, nCases, nControls, nTotal, nLoci sql.NullInt64
+			paperRows.Scan(&citekey, &filename, &studyType, &author, &year,
+				&journal, &nCases, &nControls, &nTotal, &nLoci)
+
+			add := func(label, val, unit string) {
+				if val != "" {
+					rows = append(rows, propRow{citekey, label, val, unit, filename, "📄"})
+				}
+			}
+			add("study type", orEmpty(studyType), "")
+			add("first author", orEmpty(author), "")
+			add("year", fmtNum(year), "")
+			add("journal", orEmpty(journal), "")
+			add("N cases", fmtNum(nCases), "")
+			add("N controls", fmtNum(nControls), "")
+			add("N total", fmtNum(nTotal), "")
+			add("N loci", fmtNum(nLoci), "")
+		}
+	}
+
+	// Trial properties
+	trialRows, err := db.Query(`
+		SELECT trial_name, filename, drug, phase, outcome, status,
+		       n_enrolled, modality, company, primary_endpoint
+		FROM clinical_trials`)
+	if err == nil {
+		defer trialRows.Close()
+		for trialRows.Next() {
+			var trialName, filename string
+			var drug, phase, outcome, status, modality, company, endpoint sql.NullString
+			var nEnrolled sql.NullInt64
+			trialRows.Scan(&trialName, &filename, &drug, &phase, &outcome,
+				&status, &nEnrolled, &modality, &company, &endpoint)
+
+			add := func(label, val, unit string) {
+				if val != "" {
+					rows = append(rows, propRow{trialName, label, val, unit, filename, "💊"})
+				}
+			}
+			add("drug", orEmpty(drug), "")
+			add("phase", orEmpty(phase), "")
+			add("outcome", orEmpty(outcome), "")
+			add("status", orEmpty(status), "")
+			add("N enrolled", fmtNum(nEnrolled), "")
+			add("modality", orEmpty(modality), "")
+			add("company", orEmpty(company), "")
+			add("primary endpoint", orEmpty(endpoint), "")
+		}
+	}
+
+	// Now filter rows using fuzzy matching
+	words := strings.Fields(strings.ToLower(q))
+	var items []AlfredItem
+
+	for _, r := range rows {
+		searchable := strings.ToLower(r.entity + " " + r.label + " " + r.value)
+		match := true
+		for _, w := range words {
+			if !strings.Contains(searchable, w) {
+				match = false
+				break
+			}
+		}
+		if !match {
+			continue
+		}
+
+		displayVal := r.value + r.unit
+		clipText := r.entity + " " + r.label + ": " + displayVal
+
+		items = append(items, AlfredItem{
+			Title:    r.icon + " " + r.entity + " — " + r.label + ": " + displayVal,
+			Subtitle: "↵ copy · ⇧↵ open Obsidian",
+			Arg:      clipText,
+			UID:      "prop:" + r.entity + ":" + r.label,
+			Text:     &AlfredText{Copy: clipText, Largetype: clipText},
+			Mods: map[string]AlfMod{
+				"shift": {Arg: obsidianURI(r.filename), Subtitle: "⇧↵ Open in Obsidian"},
+			},
+		})
+
+		if len(items) >= 20 {
+			break
+		}
+	}
+	return items
+}
+
+// -----------------------------------------------------------------------
 // Wide search: all entity types
 // -----------------------------------------------------------------------
 
 func searchAll(db *sql.DB, q string) []AlfredItem {
 	var items []AlfredItem
+	items = append(items, searchProperties(db, q)...)
 	items = append(items, searchDiseases(db, q)...)
 	items = append(items, searchGenes(db, q)...)
-	items = append(items, searchPapers(db, q)...)
 	items = append(items, searchTrials(db, q)...)
 	items = append(items, searchStrategies(db, q)...)
 	items = append(items, searchZettels(db, q)...)
+	items = append(items, searchPapers(db, q)...)
 
 	if len(items) > 40 {
 		items = items[:40]

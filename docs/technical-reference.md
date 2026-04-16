@@ -23,7 +23,7 @@ Stage 1 parses YAML frontmatter from typed notes and populates a relational data
 
 ```
 QAK/
-├── cmd/qak/main.go          # Alfred workflow binary (Go, 593 lines)
+├── cmd/qak/main.go          # Alfred workflow binary (Go, 857 lines)
 ├── scripts/
 │   ├── migrate_diseases.py   # Phase 1: disease note migration
 │   ├── migrate_genes.py      # Phase 2: gene note migration
@@ -104,7 +104,7 @@ obs_source            # "human" | "ai" | (blank)
 ```
 
 Paper summaries are stored in the note body, not in YAML:
-- `# OBSummary_AI` — AI-generated ~250-char summary (411 papers)
+- `# OBSummary_AI` — AI-generated ~250-char summary (411 papers). GWAS papers with `n_loci` have a `[Loci: N]` tag appended to the summary.
 - Inline `#obs` block — human-written observations (131 papers)
 
 **clinical_trial**
@@ -244,7 +244,19 @@ The binary checks if the query starts with a known prefix (case-insensitive):
 
 Each search function runs a `SELECT ... WHERE col1 LIKE ? OR col2 LIKE ? ...` query against all text columns in its table, plus joined tables where relevant. The LIKE pattern is `%query%`.
 
-Wide search (`searchAll`) calls all 6 functions sequentially and concatenates results, capped at 40 total items. Individual searches are capped at 20 per type.
+Wide search (`searchAll`) calls all 7 functions sequentially and concatenates results, capped at 40 total items. Individual searches are capped at 20 per type. Result priority order: **properties → diseases → genes → trials → strategies → zettels → papers**. Papers are last so that quick-fact results surface first.
+
+### Property search
+
+`searchProperties()` explodes entity fields into individual searchable items. It loads all rows from diseases, genes, papers, and clinical_trials, then builds an in-memory list of `(entity, label, value)` tuples. Fuzzy matching runs against the concatenation of entity name + label + value, so "als incid" matches entity "ALS" + label "incidence".
+
+Searchable properties:
+- **Diseases** (15 fields): prevalence, incidence, US patients, lifetime risk, OMIM, MONDO, Orphanet, GWAS largest N/loci/paper, WES largest N/loci/paper, heritability twin/GWAS
+- **Genes** (4 fields): full name, chromosome, cytoband, protein length
+- **Papers** (8 fields): study type, first author, year, journal, N cases/controls/total, N loci
+- **Trials** (8 fields): drug, phase, outcome, status, N enrolled, modality, company, primary endpoint
+
+The clipboard text (`arg`) includes the full label: `ALS incidence: 2 /100k`. The title shows `🦠 ALS — incidence: 2 /100k`.
 
 ### Output format
 

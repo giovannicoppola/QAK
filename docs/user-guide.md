@@ -25,6 +25,28 @@ qak meta-analysis   → papers with that study type
 qak complement      → genes, strategies, papers about complement
 ```
 
+Results are prioritized: **properties → diseases → genes → trials → strategies → zettels → papers**. Papers appear last so that quick-fact results (like prevalence or GWAS loci) surface first.
+
+### Property Search
+
+QAK also searches individual database fields as standalone items, so you can look up a specific fact without opening the full note.
+
+```
+qak als incid       → ALS incidence: 2 /100k     (copied to clipboard)
+qak als prev        → ALS prevalence: 4.5 /100k
+qak alz gwas loci   → Alzheimer's Disease GWAS loci: 38
+qak APP chrom       → APP chromosome: 21
+qak GBA protein     → GBA protein length: 536 aa
+```
+
+Property results show as `🦠 ALS — incidence: 2 /100k`. Pressing Enter copies the full label and value to clipboard (e.g., `ALS incidence: 2 /100k`).
+
+Searchable properties include:
+- **Diseases**: prevalence, incidence, US patients, lifetime risk, OMIM/MONDO/Orphanet, GWAS/WES stats, heritability
+- **Genes**: full name, chromosome, cytoband, protein length
+- **Papers**: study type, author, year, journal, sample sizes, loci
+- **Trials**: drug, phase, outcome, status, enrollment, modality, company, endpoint
+
 ### Filtered Search
 
 Prefix your query with a type tag to restrict results to one entity type.
@@ -125,6 +147,8 @@ Papers have two kinds of summaries:
 - **AI** (`obs_source: ai`) — auto-generated ~250-character factual summaries
 
 Both are searchable. In results, the subtitle shows `summary:human` or `summary:ai` so you know the source. Papers with human summaries also have an AI summary appended (`# OBSummary_AI`) for comparison.
+
+GWAS papers with a known loci count have a `[Loci: N]` tag appended to the end of their AI summary for quick reference.
 
 ## Environment Variables
 
