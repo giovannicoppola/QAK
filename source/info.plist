@@ -4,6 +4,8 @@
 <dict>
 	<key>bundleid</key>
 	<string>giovanni-qak</string>
+	<key>category</key>
+	<string>WIP</string>
 	<key>connections</key>
 	<dict>
 		<key>95622D9F-E619-417A-A2F2-69D8B7C3CF7E</key>
@@ -58,7 +60,7 @@
 				<key>runningsubtext</key>
 				<string></string>
 				<key>script</key>
-				<string>'/Users/giovanni.coppola/Library/CloudStorage/OneDrive-RegeneronPharmaceuticals,Inc/MyScripts/myGitHubRepos/QAK/qak' "$1"</string>
+				<string>../qak "$1"</string>
 				<key>scriptargtype</key>
 				<integer>1</integer>
 				<key>scriptfile</key>

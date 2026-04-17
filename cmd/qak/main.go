@@ -48,9 +48,10 @@ func dbPath() string {
 	if p := os.Getenv("QAK_DB"); p != "" {
 		return p
 	}
-	home, _ := os.UserHomeDir()
-	return filepath.Join(home,
-		"Library/CloudStorage/OneDrive-RegeneronPharmaceuticals,Inc/MyScripts/myGitHubRepos/QAK/qak.db")
+	if exe, err := os.Executable(); err == nil {
+		return filepath.Join(filepath.Dir(exe), "qak.db")
+	}
+	return "qak.db"
 }
 
 func vaultDir() string {
