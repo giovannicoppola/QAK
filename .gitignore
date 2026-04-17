@@ -1,5 +1,4 @@
-# Binary (top-level only)
-/qak
+# Temp build artifacts
 /qak-arm64
 /qak-amd64
 

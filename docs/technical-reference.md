@@ -6,10 +6,11 @@ QAK is a three-stage pipeline:
 
 ```
 Obsidian Vault (6,400+ markdown files)
-    │
-    ▼
-[1] Python: build_qak_db.py ──► qak.db (SQLite, 444 KB)
-    │
+    │                          tsundo library.db (10,500 refs)
+    │                                │
+    ▼                                ▼
+[1] Python: build_qak_db.py ──► qak.db (SQLite, 540 KB)
+    │                          enriches title, journal, citations
     ▼
 [2] Python: generate_summaries.py ──► 61 "QAK —" notes in vault
     │
@@ -17,13 +18,13 @@ Obsidian Vault (6,400+ markdown files)
 [3] Go binary: qak ──► Alfred Script Filter JSON ──► Obsidian URI
 ```
 
-Stage 1 parses YAML frontmatter from typed notes and populates a relational database. Stage 2 queries that database to produce aggregated Obsidian notes. Stage 3 is a compiled binary that queries the database at runtime and emits Alfred-compatible JSON.
+Stage 1 parses YAML frontmatter from typed notes and populates a relational database, enriched with metadata from tsundo's reference library. Stage 2 queries that database to produce aggregated Obsidian notes. Stage 3 is a compiled binary that queries the database at runtime and emits Alfred-compatible JSON.
 
 ## Repository Structure
 
 ```
 QAK/
-├── cmd/qak/main.go          # Alfred workflow binary (Go, 857 lines)
+├── cmd/qak/main.go          # Alfred workflow binary (Go, 1183 lines)
 ├── scripts/
 │   ├── migrate_diseases.py   # Phase 1: disease note migration
 │   ├── migrate_genes.py      # Phase 2: gene note migration
@@ -42,8 +43,8 @@ QAK/
 ├── go.mod, go.sum            # Go module files
 ├── Makefile                  # Build automation
 ├── .gitignore
-├── qak.db                    # Generated (not committed)
-└── qak                       # Compiled binary (not committed)
+├── qak.db                    # SQLite database (committed for cross-machine use)
+└── qak                       # Compiled universal binary (committed)
 ```
 
 ## Vault Note Types
@@ -70,6 +71,7 @@ Each note type is identified by a `type:` field in its YAML frontmatter. Notes w
 type: disease
 created, updated, aliases, tags
 prevalence_per_100k, incidence_per_100k, n_patients_us, lifetime_risk
+prevalence_by_age, incidence_by_age   # e.g. "65-74:5000, 75-84:13000, 85+:33000"
 omim, mondo, orphanet
 gwas_largest_n, gwas_loci, gwas_paper
 wes_largest_n, wes_loci, wes_paper
@@ -77,6 +79,8 @@ heritability_twin, heritability_gwas
 genes: []            # gene symbols associated with this disease
 projects: []         # active research projects
 ```
+
+Only populated fields are present in each note — empty properties and empty lists (`[]`) are omitted to keep YAML clean. Not all fields apply to every disease.
 
 **gene**
 ```yaml
@@ -102,6 +106,8 @@ diseases: [], genes: []
 n_cases, n_controls, n_total, n_loci
 obs_source            # "human" | "ai" | (blank)
 ```
+
+Paper titles are typically empty in vault YAML and are enriched from the tsundo reference library during database builds. Titles display in Alfred results as `📄 Author (Year) — Title…` (truncated at 60 chars).
 
 Paper summaries are stored in the note body, not in YAML:
 - `# OBSummary_AI` — AI-generated ~250-char summary (411 papers). GWAS papers with `n_loci` have a `[Loci: N]` tag appended to the summary.
@@ -246,12 +252,14 @@ Each search function runs a `SELECT ... WHERE col1 LIKE ? OR col2 LIKE ? ...` qu
 
 Wide search (`searchAll`) calls all 7 functions sequentially and concatenates results, capped at 40 total items. Individual searches are capped at 20 per type. Result priority order: **properties → diseases → genes → trials → strategies → zettels → papers**. Papers are last so that quick-fact results surface first.
 
+On startup, the binary checks for `myIter`/`myArg` environment variables (set by Alfred's recursive drill-down). If present, it routes directly to `epiDrillDown()` instead of normal search.
+
 ### Property search
 
-`searchProperties()` explodes entity fields into individual searchable items. It loads all rows from diseases, genes, papers, and clinical_trials, then builds an in-memory list of `(entity, label, value)` tuples. Fuzzy matching runs against the concatenation of entity name + label + value, so "als incid" matches entity "ALS" + label "incidence".
+`searchProperties()` explodes entity fields into individual searchable items. It loads all rows from diseases, genes, papers, and clinical_trials, then builds an in-memory list of `(entity, label, value)` tuples (37 fields across 4 entity types). Fuzzy matching runs against the concatenation of entity name + label + value, so "als incid" matches entity "ALS" + label "incidence".
 
 Searchable properties:
-- **Diseases** (15 fields): prevalence, incidence, US patients, lifetime risk, OMIM, MONDO, Orphanet, GWAS largest N/loci/paper, WES largest N/loci/paper, heritability twin/GWAS
+- **Diseases** (17 fields): prevalence, incidence, US patients, lifetime risk, prevalence by age, incidence by age, OMIM, MONDO, Orphanet, GWAS largest N/loci/paper, WES largest N/loci/paper, heritability twin/GWAS
 - **Genes** (4 fields): full name, chromosome, cytoband, protein length
 - **Papers** (8 fields): study type, first author, year, journal, N cases/controls/total, N loci
 - **Trials** (8 fields): drug, phase, outcome, status, N enrolled, modality, company, primary endpoint
@@ -287,9 +295,48 @@ Alfred Script Filter JSON:
 | Cmd+L | `text.largetype` | Full note displayed in Large Type overlay |
 | Cmd+C | `text.copy` | Same as Enter (quick copy while browsing) |
 | Shift+Enter | `mods.shift.arg` | Opens `obsidian://` URI in Obsidian |
-| Cmd+Enter | `mods.cmd.arg` (papers only) | Copies full raw note body |
+| Cmd+Enter | `mods.cmd.arg` | Papers: full raw note body. Properties: epi drill-down |
+| Ctrl+Enter | `mods.ctrl.arg` | Diseases: ClinicalTrials.gov external trigger |
+| Alt+Enter | `mods.alt.arg` | Diseases: GWAS trait search. Genes: GWAS gene search |
+| Cmd+Alt+Enter | `mods.cmd+alt.arg` | Genes: Gene Browser external trigger |
 
 For papers, the default `arg` is the summary (human or AI). Cmd+Enter gives the full raw note body instead. For all other types, `arg` is the full note body (frontmatter stripped).
+
+### Epi calculator drill-down
+
+Prevalence and incidence property items include a `mods.cmd` block with Alfred variables:
+
+```json
+"mods": {
+  "cmd": {
+    "variables": {
+      "myIter": true,
+      "myArg": "epi:Glaucoma:prevalence:1250"
+    }
+  }
+}
+```
+
+When Cmd+Enter is pressed, Alfred re-invokes the Script Filter with `myIter` and `myArg` set as environment variables. The binary detects `myIter` (accepts `"1"` or `"true"`) and routes to `epiDrillDown()` instead of normal search.
+
+`epiDrillDown()` queries the database for `prevalence_by_age` or `incidence_by_age` and produces:
+- Derived measures (per million, 1:N, US/EU-5/worldwide patient counts, birth-based estimates)
+- Age-stratified section: for each age band, shows rate per 100k and estimated US/EU-5 patient counts using built-in census population data
+
+Census data covers 5-year age bands for the US (2020 Census) and EU-5 (France, Germany, Italy, Spain, UK). `popForRange()` sums overlapping bands for arbitrary age range strings.
+
+### External workflow bridges
+
+Disease and gene items include modifier keys that trigger external Alfred workflows via External Triggers:
+
+| Modifier | Item type | Variable | External Trigger |
+|----------|-----------|----------|------------------|
+| Ctrl | Disease | `myMode: "cct"` | `mainQuery` (alfred-clinicalTrials) |
+| Alt | Disease | `myMode: "gwas_trait"`, `myENTRY_Q: name` | `traitQuery` (alfred-GWAS) |
+| Alt | Gene | `myMode: "gwas_gene"`, `myENTRY_Q: symbol` | `GWG` (alfred-GWAS) |
+| Cmd+Alt | Gene | `myMode: "gene_browser"`, `myENTRY_Q: symbol` | `GeneMaster` (lookup-gene) |
+
+The older GWAS and Gene Browser workflows use `{var:myENTRY_Q}` to receive the search string. The ClinicalTrials.gov workflow receives the disease name as the standard `arg`.
 
 The binary reads note files from the vault at query time to populate `arg` and `text` fields. File reads add ~5ms per result; total query time is 12–40ms for typical searches, up to ~250ms for broad terms that hit many results (e.g., "Alzheimer" across 40 notes).
 
@@ -339,11 +386,24 @@ make all
 ```
 
 This runs:
-1. `build_qak_db.py` — deletes and recreates `qak.db` from vault YAML
+1. `build_qak_db.py` — deletes and recreates `qak.db` from vault YAML, then enriches papers from tsundo
 2. `generate_summaries.py` — overwrites all `QAK —` notes from database
 3. `go build` — recompiles the binary
 
 The migration scripts (phases 1–8) are one-time operations and are not re-run by `make all`. The AI summary generation (phase 9a) is also one-time — summaries are stored in the note files and persist across rebuilds.
+
+## Tsundo Enrichment
+
+After inserting all papers from vault YAML, `build_qak_db.py` enriches them from the tsundo reference library (`library.db`, ~10,500 BibTeX entries):
+
+1. **Citekey matching** — case-insensitive lookup against tsundo's `entries` table
+2. **Title and journal** — fills in QAK's `title` and `journal` columns where the vault YAML is empty (uses `COALESCE(NULLIF(...), ?)` so existing vault values take priority)
+3. **Citation insertion** — for paper notes whose body lacks a citation (checked via PMID, DOI, or journal name), a formatted reference line is prepended: `Author, Title. Journal (Year);Vol(Issue):Pages. PMID/DOI`
+4. **Mismatch reporting** — citekeys present in the vault but not found in tsundo (even case-insensitively) are printed during the build for manual correction
+
+Current enrichment: 659/722 papers matched. 11 citekey mismatches due to naming differences (e.g., `Le_Guen` vs `Le-Guen`, different suffixes).
+
+The tsundo database path is configured as `TSUNDO_DB` at the top of `build_qak_db.py`. If `library.db` is not found, enrichment is silently skipped.
 
 ## Known Limitations
 

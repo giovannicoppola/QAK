@@ -15,6 +15,7 @@ from datetime import datetime
 
 VAULT = Path("/Users/giovanni.coppola/Library/CloudStorage/OneDrive-RegeneronPharmaceuticals,Inc/MyScripts/myGitHubRepos/gitVault/gitVault-notes")
 DB_PATH = Path("/Users/giovanni.coppola/Library/CloudStorage/OneDrive-RegeneronPharmaceuticals,Inc/MyScripts/myGitHubRepos/QAK/qak.db")
+TSUNDO_DB = Path("/Users/giovanni.coppola/Library/CloudStorage/OneDrive-RegeneronPharmaceuticals,Inc/MyScripts/myGitHubRepos/tsundo/library.db")
 
 
 # ---------------------------------------------------------------------------
@@ -134,7 +135,9 @@ CREATE TABLE IF NOT EXISTS diseases (
     wes_loci INTEGER,
     wes_paper TEXT,
     heritability_twin TEXT,
-    heritability_gwas TEXT
+    heritability_gwas TEXT,
+    prevalence_by_age TEXT,
+    incidence_by_age TEXT
 );
 
 CREATE TABLE IF NOT EXISTS genes (
@@ -331,15 +334,17 @@ def build_db():
                omim, mondo, orphanet,
                gwas_largest_n, gwas_loci, gwas_paper,
                wes_largest_n, wes_loci, wes_paper,
-               heritability_twin, heritability_gwas)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+               heritability_twin, heritability_gwas,
+               prevalence_by_age, incidence_by_age)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (name, filename, s(fm.get("created")), s(fm.get("updated")),
              n(fm.get("prevalence_per_100k")), n(fm.get("incidence_per_100k")),
              n(fm.get("n_patients_us")), s(fm.get("lifetime_risk")),
              s(fm.get("omim")), s(fm.get("mondo")), s(fm.get("orphanet")),
              n(fm.get("gwas_largest_n")), n(fm.get("gwas_loci")), s(fm.get("gwas_paper")),
              n(fm.get("wes_largest_n")), n(fm.get("wes_loci")), s(fm.get("wes_paper")),
-             s(fm.get("heritability_twin")), s(fm.get("heritability_gwas")))
+             s(fm.get("heritability_twin")), s(fm.get("heritability_gwas")),
+             s(fm.get("prevalence_by_age")), s(fm.get("incidence_by_age")))
         )
         disease_ids[name] = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
 
@@ -380,6 +385,102 @@ def build_db():
         paper_ids[citekey] = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
 
     print(f"  papers:      {len(paper_ids)}")
+
+    # ---- Enrich papers from tsundo library (title, journal, full reference) ----
+    enriched = 0
+    not_found = []
+    if TSUNDO_DB.exists():
+        tsundo = sqlite3.connect(f"file:{TSUNDO_DB}?mode=ro", uri=True)
+        # Build case-insensitive lookup index from tsundo
+        tsundo_keys = {}
+        for row in tsundo.execute("SELECT citekey FROM entries"):
+            tsundo_keys[row[0].lower()] = row[0]
+
+        for citekey in paper_ids:
+            real_key = tsundo_keys.get(citekey.lower())
+            if not real_key:
+                # Not a book (has hyphen suffix like Author2020-xx)
+                if re.match(r'.+\d{4}-\w+$', citekey):
+                    not_found.append(citekey)
+                continue
+            row = tsundo.execute(
+                "SELECT title, journal, author, year, volume, issue, pages, doi, pmid, pmc "
+                "FROM entries WHERE citekey = ?", (real_key,)
+            ).fetchone()
+            if not row:
+                continue
+            t, j, author, year, volume, issue, pages, doi, pmid, pmc = row
+            if t:
+                t = re.sub(r'[{}]', '', t)  # strip BibTeX braces
+
+            # Build formatted reference string
+            ref_parts = []
+            if author:
+                ref_parts.append(author.replace(" and ", ", "))
+            if t:
+                ref_parts.append(t + ".")
+            if j:
+                jref = j
+                if year:
+                    jref += f" ({year})"
+                if volume:
+                    jref += f";{volume}"
+                    if issue:
+                        jref += f"({issue})"
+                if pages:
+                    jref += f":{pages}"
+                ref_parts.append(jref + ".")
+            ids = []
+            if pmid:
+                ids.append(f"PMID: {pmid}")
+            if pmc:
+                ids.append(f"PMCID: {pmc}")
+            if doi:
+                ids.append(f"DOI: {doi}")
+            if ids:
+                ref_parts.append(" ".join(ids))
+            full_ref = " ".join(ref_parts) if ref_parts else None
+
+            conn.execute(
+                "UPDATE papers SET title = COALESCE(NULLIF(title,''), ?), "
+                "journal = COALESCE(NULLIF(journal,''), ?) WHERE citekey = ?",
+                (t, j, citekey))
+            enriched += 1
+
+            # Write full reference to vault note if body lacks a citation line
+            if full_ref:
+                fname = conn.execute(
+                    "SELECT filename FROM papers WHERE citekey = ?", (citekey,)
+                ).fetchone()
+                if fname and fname[0]:
+                    fpath = VAULT / fname[0]
+                    if fpath.exists():
+                        content = fpath.read_text(encoding="utf-8")
+                        fm_end = content.find("\n---", 3)
+                        if fm_end > 0:
+                            body = content[fm_end+4:]
+                            # Only add if body doesn't already contain a full citation
+                            # (check for PMID, DOI, or journal name as proxy)
+                            has_ref = False
+                            body_lower = body[:500].lower()
+                            if pmid and str(pmid) in body_lower:
+                                has_ref = True
+                            elif doi and doi.lower() in body_lower:
+                                has_ref = True
+                            elif j and j.lower() in body_lower:
+                                has_ref = True
+                            if not has_ref:
+                                new_content = content[:fm_end+4] + "\n  * " + full_ref + "\n" + body
+                                fpath.write_text(new_content, encoding="utf-8")
+
+        tsundo.close()
+        print(f"  tsundo enriched: {enriched}/{len(paper_ids)} papers (title, journal)")
+        if not_found:
+            print(f"  tsundo mismatches ({len(not_found)}):")
+            for ck in sorted(not_found):
+                print(f"    {ck}")
+    else:
+        print(f"  tsundo: library.db not found, skipping enrichment")
 
     # ---- Clinical Trials ----
     for filename, fm, body in notes.get("clinical_trial", []):

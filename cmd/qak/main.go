@@ -4,8 +4,10 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	_ "github.com/mattn/go-sqlite3"
@@ -21,6 +23,7 @@ type AlfredItem struct {
 	Autocomplete string            `json:"autocomplete,omitempty"`
 	Text         *AlfredText       `json:"text,omitempty"`
 	Mods         map[string]AlfMod `json:"mods,omitempty"`
+	Variables    AlfredVariables   `json:"variables,omitempty"`
 	UID          string            `json:"uid,omitempty"`
 }
 
@@ -33,13 +36,17 @@ type AlfredText struct {
 	Largetype string `json:"largetype,omitempty"`
 }
 
+type AlfredVariables map[string]interface{}
+
 type AlfMod struct {
-	Arg      string `json:"arg"`
-	Subtitle string `json:"subtitle"`
+	Arg       string          `json:"arg"`
+	Subtitle  string          `json:"subtitle"`
+	Variables AlfredVariables `json:"variables,omitempty"`
 }
 
 type AlfredOutput struct {
-	Items []AlfredItem `json:"items"`
+	Items     []AlfredItem    `json:"items"`
+	Variables AlfredVariables `json:"variables,omitempty"`
 }
 
 // Paths
@@ -263,7 +270,18 @@ func searchDiseases(db *sql.DB, q string) []AlfredItem {
 			fmt.Sprintf("%d genes, %d papers, %d trials", nGenes.Int64, nPapers.Int64, nTrials.Int64),
 		})
 
-		items = append(items, makeItem("🦠 "+name, sub, filename, "disease:"+name))
+		item := makeItem("🦠 "+name, sub, filename, "disease:"+name)
+		item.Mods["ctrl"] = AlfMod{
+			Arg:      name,
+			Subtitle: "⌃↵ Search ClinicalTrials.gov",
+			Variables: AlfredVariables{"myMode": "cct"},
+		}
+		item.Mods["alt"] = AlfMod{
+			Arg:      name,
+			Subtitle: "⌥↵ GWAS Catalog (trait)",
+			Variables: AlfredVariables{"myMode": "gwas_trait", "myENTRY_Q": name},
+		}
+		items = append(items, item)
 	}
 	return items
 }
@@ -307,7 +325,18 @@ func searchGenes(db *sql.DB, q string) []AlfredItem {
 			fmt.Sprintf("%d diseases, %d papers", nDiseases.Int64, nPapers.Int64),
 		})
 
-		items = append(items, makeItem("🧬 "+symbol, sub, filename, "gene:"+symbol))
+		item := makeItem("🧬 "+symbol, sub, filename, "gene:"+symbol)
+		item.Mods["alt"] = AlfMod{
+			Arg:      symbol,
+			Subtitle: "⌥↵ GWAS Catalog (gene)",
+			Variables: AlfredVariables{"myMode": "gwas_gene", "myENTRY_Q": symbol},
+		}
+		item.Mods["cmd+alt"] = AlfMod{
+			Arg:      symbol,
+			Subtitle: "⌥⌘↵ Gene Browser",
+			Variables: AlfredVariables{"myMode": "gene_browser", "myENTRY_Q": symbol},
+		}
+		items = append(items, item)
 	}
 	return items
 }
@@ -347,6 +376,13 @@ func searchPapers(db *sql.DB, q string) []AlfredItem {
 			if year.Valid {
 				displayTitle += fmt.Sprintf(" (%d)", year.Int64)
 			}
+		}
+		// Append paper title for context
+		if t := orEmpty(title); t != "" {
+			if len(t) > 60 {
+				t = t[:60] + "…"
+			}
+			displayTitle += " — " + t
 		}
 
 		sub := join([]string{
@@ -733,20 +769,305 @@ func searchProperties(db *sql.DB, q string) []AlfredItem {
 		displayVal := r.value + r.unit
 		clipText := r.entity + " " + r.label + ": " + displayVal
 
+		mods := map[string]AlfMod{
+			"shift": {Arg: obsidianURI(r.filename), Subtitle: "⇧↵ Open in Obsidian"},
+		}
+
+		subtitle := "↵ copy · ⇧↵ open Obsidian"
+
+		// For prevalence/incidence, add Cmd+Enter to drill into derived measures
+		if r.label == "prevalence" || r.label == "incidence" {
+			mods["cmd"] = AlfMod{
+				Arg:      clipText,
+				Subtitle: "⌘↵ Derived measures",
+				Variables: AlfredVariables{
+					"myIter": true,
+					"myArg":  fmt.Sprintf("epi:%s:%s:%s", r.entity, r.label, r.value),
+				},
+			}
+			subtitle = "↵ copy · ⌘↵ derived measures · ⇧↵ Obsidian"
+		}
+
 		items = append(items, AlfredItem{
 			Title:    r.icon + " " + r.entity + " — " + r.label + ": " + displayVal,
-			Subtitle: "↵ copy · ⇧↵ open Obsidian",
+			Subtitle: subtitle,
 			Arg:      clipText,
 			UID:      "prop:" + r.entity + ":" + r.label,
 			Text:     &AlfredText{Copy: clipText, Largetype: clipText},
-			Mods: map[string]AlfMod{
-				"shift": {Arg: obsidianURI(r.filename), Subtitle: "⇧↵ Open in Obsidian"},
-			},
+			Mods:     mods,
 		})
 
 		if len(items) >= 20 {
 			break
 		}
+	}
+	return items
+}
+
+// -----------------------------------------------------------------------
+// Epi calculator: derive measures from a rate per 100k
+// -----------------------------------------------------------------------
+
+// Population reference data (approximate, 2024 estimates)
+const (
+	popUS       = 335_000_000
+	popEU5      = 328_000_000 // DE+FR+IT+ES+UK
+	popWorld    = 8_100_000_000
+	birthsUS    = 3_600_000 // yearly US births
+	birthsWorld = 140_000_000
+)
+
+// US Census 5-year age bands (2024 estimates, thousands → actual)
+// Source: US Census Bureau population estimates
+var censusUS = map[string]int64{
+	"0-4": 19_400_000, "5-9": 20_200_000, "10-14": 21_300_000,
+	"15-19": 21_600_000, "20-24": 21_800_000, "25-29": 23_000_000,
+	"30-34": 23_100_000, "35-39": 22_200_000, "40-44": 21_000_000,
+	"45-49": 20_400_000, "50-54": 20_600_000, "55-59": 21_200_000,
+	"60-64": 21_500_000, "65-69": 19_600_000, "70-74": 16_400_000,
+	"75-79": 11_900_000, "80-84": 7_400_000, "85+": 7_100_000,
+}
+
+// EU-5 5-year age bands (2024 estimates: DE+FR+IT+ES+UK)
+var censusEU5 = map[string]int64{
+	"0-4": 15_100_000, "5-9": 16_200_000, "10-14": 17_100_000,
+	"15-19": 17_500_000, "20-24": 18_200_000, "25-29": 18_800_000,
+	"30-34": 19_500_000, "35-39": 20_200_000, "40-44": 21_800_000,
+	"45-49": 22_100_000, "50-54": 23_300_000, "55-59": 22_800_000,
+	"60-64": 20_600_000, "65-69": 18_200_000, "70-74": 15_800_000,
+	"75-79": 12_100_000, "80-84": 8_600_000, "85+": 7_200_000,
+}
+
+// Ordered list of 5-year band boundaries for range lookups
+var ageBands = []struct {
+	label    string
+	lo, hi   int // hi = -1 means open-ended (85+)
+}{
+	{"0-4", 0, 4}, {"5-9", 5, 9}, {"10-14", 10, 14}, {"15-19", 15, 19},
+	{"20-24", 20, 24}, {"25-29", 25, 29}, {"30-34", 30, 34}, {"35-39", 35, 39},
+	{"40-44", 40, 44}, {"45-49", 45, 49}, {"50-54", 50, 54}, {"55-59", 55, 59},
+	{"60-64", 60, 64}, {"65-69", 65, 69}, {"70-74", 70, 74}, {"75-79", 75, 79},
+	{"80-84", 80, 84}, {"85+", 85, -1},
+}
+
+// popForRange returns the total population for an arbitrary age range
+// by summing the 5-year bands that overlap. Supports: "65-74", "0-17", "85+", "80+"
+func popForRange(ageRange string, census map[string]int64) int64 {
+	ageRange = strings.TrimSpace(ageRange)
+	var lo, hi int
+	openEnded := false
+
+	if strings.HasSuffix(ageRange, "+") {
+		lo, _ = strconv.Atoi(strings.TrimSuffix(ageRange, "+"))
+		hi = 999
+		openEnded = true
+	} else if parts := strings.SplitN(ageRange, "-", 2); len(parts) == 2 {
+		lo, _ = strconv.Atoi(strings.TrimSpace(parts[0]))
+		hi, _ = strconv.Atoi(strings.TrimSpace(parts[1]))
+	} else {
+		return 0
+	}
+	_ = openEnded
+
+	var total int64
+	for _, band := range ageBands {
+		bandHi := band.hi
+		if bandHi == -1 {
+			bandHi = 999 // open-ended
+		}
+		// Band overlaps range if band.lo <= hi AND bandHi >= lo
+		if band.lo <= hi && bandHi >= lo {
+			total += census[band.label]
+		}
+	}
+	return total
+}
+
+// parseAgeRates parses "65-74:5000, 75-84:14000, 85+:35000" into pairs
+type ageRate struct {
+	ageRange   string
+	ratePer100k float64
+}
+
+func parseAgeRates(s string) []ageRate {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return nil
+	}
+	var result []ageRate
+	for _, part := range strings.Split(s, ",") {
+		part = strings.TrimSpace(part)
+		idx := strings.LastIndex(part, ":")
+		if idx < 0 {
+			continue
+		}
+		ageStr := strings.TrimSpace(part[:idx])
+		rateStr := strings.TrimSpace(part[idx+1:])
+		rate, err := strconv.ParseFloat(rateStr, 64)
+		if err != nil {
+			continue
+		}
+		result = append(result, ageRate{ageStr, rate})
+	}
+	return result
+}
+
+type epiRow struct {
+	label string
+	value string
+}
+
+func epiCalc(disease, rateType string, ratePer100k float64, ageRates []ageRate) []epiRow {
+	var rows []epiRow
+
+	// Original rate
+	rows = append(rows, epiRow{
+		label: fmt.Sprintf("%s per 100k", rateType),
+		value: strconv.FormatFloat(ratePer100k, 'f', -1, 64),
+	})
+
+	// Per million
+	perMillion := ratePer100k * 10
+	rows = append(rows, epiRow{
+		label: fmt.Sprintf("%s per million", rateType),
+		value: strconv.FormatFloat(perMillion, 'f', -1, 64),
+	})
+
+	// 1:N notation
+	if ratePer100k > 0 {
+		oneIn := 100_000.0 / ratePer100k
+		rows = append(rows, epiRow{
+			label: fmt.Sprintf("%s (1 in N)", rateType),
+			value: fmt.Sprintf("1:%s", fmtLargeInt(int64(math.Round(oneIn)))),
+		})
+	}
+
+	// Absolute patient/case counts
+	rate := ratePer100k / 100_000.0
+
+	addPop := func(popName string, pop int64) {
+		n := rate * float64(pop)
+		rows = append(rows, epiRow{
+			label: fmt.Sprintf("%s %s — %s", rateType, popName, disease),
+			value: fmtLargeInt(int64(math.Round(n))),
+		})
+	}
+
+	addPop("US", popUS)
+	addPop("EU-5", popEU5)
+	addPop("worldwide", popWorld)
+
+	// Birth-based estimates (meaningful for both prevalence and incidence)
+	addBirths := func(label string, births int64) {
+		n := rate * float64(births)
+		rows = append(rows, epiRow{
+			label: fmt.Sprintf("%s %s — %s", rateType, label, disease),
+			value: fmtLargeInt(int64(math.Round(n))),
+		})
+	}
+	addBirths("yearly US births", birthsUS)
+	addBirths("yearly births worldwide", birthsWorld)
+
+	// Age-stratified rates
+	if len(ageRates) > 0 {
+		rows = append(rows, epiRow{label: "── by age ──", value: ""})
+		for _, ar := range ageRates {
+			usAge := popForRange(ar.ageRange, censusUS)
+			eu5Age := popForRange(ar.ageRange, censusEU5)
+			ageRate := ar.ratePer100k / 100_000.0
+
+			nUS := int64(math.Round(ageRate * float64(usAge)))
+			nEU5 := int64(math.Round(ageRate * float64(eu5Age)))
+
+			rows = append(rows, epiRow{
+				label: fmt.Sprintf("age %s: %s/100k", ar.ageRange, strconv.FormatFloat(ar.ratePer100k, 'f', -1, 64)),
+				value: fmt.Sprintf("US %s · EU-5 %s", fmtLargeInt(nUS), fmtLargeInt(nEU5)),
+			})
+		}
+	}
+
+	return rows
+}
+
+func fmtLargeInt(n int64) string {
+	if n >= 1_000_000_000 {
+		return fmt.Sprintf("%.2fB", float64(n)/1e9)
+	}
+	if n >= 1_000_000 {
+		return fmt.Sprintf("%.2fM", float64(n)/1e6)
+	}
+	if n >= 1_000 {
+		return fmt.Sprintf("%s", commaFmt(n))
+	}
+	return fmt.Sprintf("%d", n)
+}
+
+func commaFmt(n int64) string {
+	s := fmt.Sprintf("%d", n)
+	if n < 0 {
+		return "-" + commaFmt(-n)
+	}
+	if len(s) <= 3 {
+		return s
+	}
+	var parts []string
+	for len(s) > 3 {
+		parts = append([]string{s[len(s)-3:]}, parts...)
+		s = s[:len(s)-3]
+	}
+	parts = append([]string{s}, parts...)
+	return strings.Join(parts, ",")
+}
+
+func epiDrillDown(db *sql.DB, disease, rateType string, ratePer100k float64) []AlfredItem {
+	// Look up age-stratified data for this disease
+	var ageRates []ageRate
+	col := rateType + "_by_age" // prevalence_by_age or incidence_by_age
+	var ageStr sql.NullString
+	db.QueryRow("SELECT "+col+" FROM diseases WHERE name = ?", disease).Scan(&ageStr)
+	if ageStr.Valid {
+		ageRates = parseAgeRates(ageStr.String)
+	}
+
+	rows := epiCalc(disease, rateType, ratePer100k, ageRates)
+
+	// Build "copy all age rows" text for Cmd modifier on age items
+	var ageLines []string
+	for _, r := range rows {
+		if strings.HasPrefix(r.label, "age ") {
+			ageLines = append(ageLines, disease+" "+r.label+": "+r.value)
+		}
+	}
+	allAgeText := strings.Join(ageLines, "\n")
+
+	var items []AlfredItem
+	for _, r := range rows {
+		// Separator row — "── by age ──" becomes the "copy all" row
+		if r.value == "" {
+			if len(ageLines) > 0 {
+				items = append(items, AlfredItem{
+					Title:    r.label,
+					Subtitle: fmt.Sprintf("↵ copy all %d age ranges", len(ageLines)),
+					Arg:      allAgeText,
+					Text:     &AlfredText{Copy: allAgeText, Largetype: allAgeText},
+					UID:      "epi:" + disease + ":all_ages",
+				})
+			} else {
+				items = append(items, AlfredItem{
+					Title: r.label,
+				})
+			}
+			continue
+		}
+		clipText := disease + " " + r.label + ": " + r.value
+		item := AlfredItem{
+			Title:    "📊 " + r.label + ": " + r.value,
+			Subtitle: "↵ copy",
+			Arg:      clipText,
+			UID:      "epi:" + disease + ":" + r.label,
+			Text:     &AlfredText{Copy: clipText, Largetype: clipText},
+		}
+		items = append(items, item)
 	}
 	return items
 }
@@ -787,6 +1108,44 @@ func main() {
 		os.Exit(1)
 	}
 
+	db, err := sql.Open("sqlite3", dbPath()+"?mode=ro")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error opening database: %v\n", err)
+		os.Exit(1)
+	}
+	defer db.Close()
+
+	// Check for recursive drill-down via Alfred variables
+	myArg := os.Getenv("myArg")
+	iterVal := os.Getenv("myIter")
+	if myArg != "" && (iterVal == "1" || iterVal == "true") {
+		// Parse epi drill-down: "epi:DISEASE:TYPE:RATE"
+		if strings.HasPrefix(myArg, "epi:") {
+			parts := strings.SplitN(myArg[4:], ":", 3)
+			if len(parts) == 3 {
+				disease := parts[0]
+				rateType := parts[1]
+				rate, err := strconv.ParseFloat(parts[2], 64)
+				if err == nil {
+					items := epiDrillDown(db, disease, rateType, rate)
+					total := len(items)
+					for i := range items {
+						if items[i].Subtitle != "" {
+							items[i].Subtitle = fmt.Sprintf("%d/%d %s", i+1, total, items[i].Subtitle)
+						} else {
+							items[i].Subtitle = fmt.Sprintf("%d/%d", i+1, total)
+						}
+					}
+					output := AlfredOutput{Items: items}
+					enc := json.NewEncoder(os.Stdout)
+					enc.SetEscapeHTML(false)
+					enc.Encode(output)
+					return
+				}
+			}
+		}
+	}
+
 	raw := strings.Join(os.Args[1:], " ")
 	if strings.HasPrefix(raw, "--zk ") {
 		raw = "zk:" + raw[5:]
@@ -795,13 +1154,6 @@ func main() {
 	}
 
 	filter, query := parseQuery(raw)
-
-	db, err := sql.Open("sqlite3", dbPath()+"?mode=ro")
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error opening database: %v\n", err)
-		os.Exit(1)
-	}
-	defer db.Close()
 
 	var items []AlfredItem
 

@@ -8,13 +8,90 @@
 	<string>WIP</string>
 	<key>connections</key>
 	<dict>
+		<key>50486539-0B92-412F-91E7-4FA41947C0CC</key>
+		<array>
+			<dict>
+				<key>destinationuid</key>
+				<string>E2724FD1-DC39-4F63-A166-3E5A776B751B</string>
+				<key>modifiers</key>
+				<integer>0</integer>
+				<key>modifiersubtext</key>
+				<string></string>
+				<key>sourceoutputuid</key>
+				<string>F1B00001-AAAA-4BBB-CCCC-DDDDEEEE0001</string>
+				<key>vitoclose</key>
+				<false/>
+			</dict>
+			<dict>
+				<key>destinationuid</key>
+				<string>D340C5F4-56BE-449F-93EE-6F8DD3A9E63E</string>
+				<key>modifiers</key>
+				<integer>0</integer>
+				<key>modifiersubtext</key>
+				<string></string>
+				<key>sourceoutputuid</key>
+				<string>F1B00011-AAAA-4BBB-CCCC-DDDDEEEE0011</string>
+				<key>vitoclose</key>
+				<false/>
+			</dict>
+		</array>
 		<key>95622D9F-E619-417A-A2F2-69D8B7C3CF7E</key>
 		<array>
+			<dict>
+				<key>destinationuid</key>
+				<string>1892F49D-99C2-452F-8232-1FCE442B714E</string>
+				<key>modifiers</key>
+				<integer>1572864</integer>
+				<key>modifiersubtext</key>
+				<string></string>
+				<key>vitoclose</key>
+				<false/>
+			</dict>
+			<dict>
+				<key>destinationuid</key>
+				<string>D15771A9-6287-4997-B756-0A7759A33789</string>
+				<key>modifiers</key>
+				<integer>262144</integer>
+				<key>modifiersubtext</key>
+				<string></string>
+				<key>vitoclose</key>
+				<false/>
+			</dict>
+			<dict>
+				<key>destinationuid</key>
+				<string>98F65A7C-5248-43D6-BFCF-41813EACD2AA</string>
+				<key>modifiers</key>
+				<integer>1048576</integer>
+				<key>modifiersubtext</key>
+				<string></string>
+				<key>vitoclose</key>
+				<false/>
+			</dict>
+			<dict>
+				<key>destinationuid</key>
+				<string>50486539-0B92-412F-91E7-4FA41947C0CC</string>
+				<key>modifiers</key>
+				<integer>524288</integer>
+				<key>modifiersubtext</key>
+				<string></string>
+				<key>vitoclose</key>
+				<false/>
+			</dict>
 			<dict>
 				<key>destinationuid</key>
 				<string>72654D0B-ECD8-4639-AA9E-F7EBCB031C91</string>
 				<key>modifiers</key>
 				<integer>0</integer>
+				<key>modifiersubtext</key>
+				<string></string>
+				<key>vitoclose</key>
+				<false/>
+			</dict>
+			<dict>
+				<key>destinationuid</key>
+				<string>BFCEB75B-84AD-4967-8C7E-0C6507A4CCAF</string>
+				<key>modifiers</key>
+				<integer>131072</integer>
 				<key>modifiersubtext</key>
 				<string></string>
 				<key>vitoclose</key>
@@ -32,6 +109,147 @@
 	<string>QAK</string>
 	<key>objects</key>
 	<array>
+		<dict>
+			<key>config</key>
+			<dict>
+				<key>externaltriggerid</key>
+				<string>GeneMaster</string>
+				<key>passinputasargument</key>
+				<true/>
+				<key>passvariables</key>
+				<true/>
+				<key>workflowbundleid</key>
+				<string>lookup-gene-go</string>
+			</dict>
+			<key>type</key>
+			<string>alfred.workflow.output.callexternaltrigger</string>
+			<key>uid</key>
+			<string>1892F49D-99C2-452F-8232-1FCE442B714E</string>
+			<key>version</key>
+			<integer>1</integer>
+		</dict>
+		<dict>
+			<key>config</key>
+			<dict>
+				<key>externaltriggerid</key>
+				<string>mainQuery</string>
+				<key>passinputasargument</key>
+				<true/>
+				<key>passvariables</key>
+				<true/>
+				<key>workflowbundleid</key>
+				<string>giovanni-clinicaltrials</string>
+			</dict>
+			<key>type</key>
+			<string>alfred.workflow.output.callexternaltrigger</string>
+			<key>uid</key>
+			<string>D15771A9-6287-4997-B756-0A7759A33789</string>
+			<key>version</key>
+			<integer>1</integer>
+		</dict>
+		<dict>
+			<key>config</key>
+			<dict>
+				<key>externaltriggerid</key>
+				<string>GWG</string>
+				<key>passinputasargument</key>
+				<true/>
+				<key>passvariables</key>
+				<true/>
+				<key>workflowbundleid</key>
+				<string>alfred-gwas</string>
+			</dict>
+			<key>type</key>
+			<string>alfred.workflow.output.callexternaltrigger</string>
+			<key>uid</key>
+			<string>E2724FD1-DC39-4F63-A166-3E5A776B751B</string>
+			<key>version</key>
+			<integer>1</integer>
+		</dict>
+		<dict>
+			<key>config</key>
+			<dict>
+				<key>conditions</key>
+				<array>
+					<dict>
+						<key>inputstring</key>
+						<string>{var:myMode}</string>
+						<key>matchcasesensitive</key>
+						<false/>
+						<key>matchmode</key>
+						<integer>0</integer>
+						<key>matchstring</key>
+						<string>gwas_gene</string>
+						<key>outputlabel</key>
+						<string>gwas_gene</string>
+						<key>uid</key>
+						<string>F1B00001-AAAA-4BBB-CCCC-DDDDEEEE0001</string>
+					</dict>
+					<dict>
+						<key>inputstring</key>
+						<string>{var:myMode}</string>
+						<key>matchcasesensitive</key>
+						<false/>
+						<key>matchmode</key>
+						<integer>0</integer>
+						<key>matchstring</key>
+						<string>gwas_trait</string>
+						<key>outputlabel</key>
+						<string>gwas_trait</string>
+						<key>uid</key>
+						<string>F1B00011-AAAA-4BBB-CCCC-DDDDEEEE0011</string>
+					</dict>
+				</array>
+				<key>elselabel</key>
+				<string>confirm</string>
+				<key>hideelse</key>
+				<true/>
+			</dict>
+			<key>type</key>
+			<string>alfred.workflow.utility.conditional</string>
+			<key>uid</key>
+			<string>50486539-0B92-412F-91E7-4FA41947C0CC</string>
+			<key>version</key>
+			<integer>1</integer>
+		</dict>
+		<dict>
+			<key>config</key>
+			<dict>
+				<key>externaltriggerid</key>
+				<string>main-query</string>
+				<key>passinputasargument</key>
+				<true/>
+				<key>passvariables</key>
+				<true/>
+				<key>workflowbundleid</key>
+				<string>self</string>
+			</dict>
+			<key>type</key>
+			<string>alfred.workflow.output.callexternaltrigger</string>
+			<key>uid</key>
+			<string>98F65A7C-5248-43D6-BFCF-41813EACD2AA</string>
+			<key>version</key>
+			<integer>1</integer>
+		</dict>
+		<dict>
+			<key>config</key>
+			<dict>
+				<key>externaltriggerid</key>
+				<string>traitQuery</string>
+				<key>passinputasargument</key>
+				<true/>
+				<key>passvariables</key>
+				<true/>
+				<key>workflowbundleid</key>
+				<string>alfred-gwas</string>
+			</dict>
+			<key>type</key>
+			<string>alfred.workflow.output.callexternaltrigger</string>
+			<key>uid</key>
+			<string>D340C5F4-56BE-449F-93EE-6F8DD3A9E63E</string>
+			<key>version</key>
+			<integer>1</integer>
+		</dict>
 		<dict>
 			<key>config</key>
 			<dict>
@@ -74,6 +292,11 @@
 				<key>withspace</key>
 				<true/>
 			</dict>
+			<key>inboundconfig</key>
+			<dict>
+				<key>externalid</key>
+				<string>main-query</string>
+			</dict>
 			<key>type</key>
 			<string>alfred.workflow.input.scriptfilter</string>
 			<key>uid</key>
@@ -110,24 +333,98 @@
 			<key>version</key>
 			<integer>3</integer>
 		</dict>
+		<dict>
+			<key>config</key>
+			<dict>
+				<key>concurrently</key>
+				<false/>
+				<key>escaping</key>
+				<integer>102</integer>
+				<key>script</key>
+				<string>open "$1"</string>
+				<key>scriptargtype</key>
+				<integer>1</integer>
+				<key>scriptfile</key>
+				<string></string>
+				<key>type</key>
+				<integer>11</integer>
+			</dict>
+			<key>type</key>
+			<string>alfred.workflow.action.script</string>
+			<key>uid</key>
+			<string>BFCEB75B-84AD-4967-8C7E-0C6507A4CCAF</string>
+			<key>version</key>
+			<integer>2</integer>
+		</dict>
 	</array>
 	<key>readme</key>
 	<string></string>
 	<key>uidata</key>
 	<dict>
+		<key>1892F49D-99C2-452F-8232-1FCE442B714E</key>
+		<dict>
+			<key>xpos</key>
+			<real>575</real>
+			<key>ypos</key>
+			<real>120</real>
+		</dict>
+		<key>50486539-0B92-412F-91E7-4FA41947C0CC</key>
+		<dict>
+			<key>colorindex</key>
+			<integer>9</integer>
+			<key>xpos</key>
+			<real>775</real>
+			<key>ypos</key>
+			<real>380</real>
+		</dict>
 		<key>72654D0B-ECD8-4639-AA9E-F7EBCB031C91</key>
 		<dict>
 			<key>xpos</key>
-			<real>1230</real>
+			<real>600</real>
 			<key>ypos</key>
-			<real>570</real>
+			<real>615</real>
 		</dict>
 		<key>95622D9F-E619-417A-A2F2-69D8B7C3CF7E</key>
 		<dict>
 			<key>xpos</key>
-			<real>925</real>
+			<real>260</real>
 			<key>ypos</key>
-			<real>555</real>
+			<real>600</real>
+		</dict>
+		<key>98F65A7C-5248-43D6-BFCF-41813EACD2AA</key>
+		<dict>
+			<key>xpos</key>
+			<real>495</real>
+			<key>ypos</key>
+			<real>380</real>
+		</dict>
+		<key>BFCEB75B-84AD-4967-8C7E-0C6507A4CCAF</key>
+		<dict>
+			<key>xpos</key>
+			<real>440</real>
+			<key>ypos</key>
+			<real>795</real>
+		</dict>
+		<key>D15771A9-6287-4997-B756-0A7759A33789</key>
+		<dict>
+			<key>xpos</key>
+			<real>265</real>
+			<key>ypos</key>
+			<real>260</real>
+		</dict>
+		<key>D340C5F4-56BE-449F-93EE-6F8DD3A9E63E</key>
+		<dict>
+			<key>xpos</key>
+			<real>960</real>
+			<key>ypos</key>
+			<real>435</real>
+		</dict>
+		<key>E2724FD1-DC39-4F63-A166-3E5A776B751B</key>
+		<dict>
+			<key>xpos</key>
+			<real>960</real>
+			<key>ypos</key>
+			<real>285</real>
 		</dict>
 	</dict>
 	<key>userconfigurationconfig</key>

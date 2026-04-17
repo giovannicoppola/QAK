@@ -42,7 +42,7 @@ qak GBA protein     → GBA protein length: 536 aa
 Property results show as `🦠 ALS — incidence: 2 /100k`. Pressing Enter copies the full label and value to clipboard (e.g., `ALS incidence: 2 /100k`).
 
 Searchable properties include:
-- **Diseases**: prevalence, incidence, US patients, lifetime risk, OMIM/MONDO/Orphanet, GWAS/WES stats, heritability
+- **Diseases**: prevalence, incidence, US patients, lifetime risk, OMIM/MONDO/Orphanet, GWAS/WES stats, heritability, prevalence by age
 - **Genes**: full name, chromosome, cytoband, protein length
 - **Papers**: study type, author, year, journal, sample sizes, loci
 - **Trials**: drug, phase, outcome, status, enrollment, modality, company, endpoint
@@ -90,7 +90,7 @@ Each result is prefixed with an emoji indicating its type:
 |-------|------|-------------|
 | `🦠` | Disease | Name, US patients, prevalence, GWAS loci, paper/trial counts |
 | `🧬` | Gene | Symbol, full name, chromosome, disease/paper counts |
-| `📄` | Paper | Author (year), study type, sample size, summary source |
+| `📄` | Paper | Author (year) — Title, study type, sample size, summary source |
 | `💊` | Trial | Trial name, drug, phase, outcome, disease(s) |
 | `🎯` | Strategy | Name, modality, disease(s), target genes |
 | (none) | Zettel | Fact text, category, disease/gene tags |
@@ -104,8 +104,37 @@ Each result is prefixed with an emoji indicating its type:
 | **Cmd+C** | Quick copy while browsing (same as Enter) |
 | **Shift+Enter** | Open the note in Obsidian |
 | **Cmd+Enter** | Copy full note body (papers: bypasses summary, gives raw note) |
+| **Cmd+Enter** | Epi calculator drill-down (on prevalence/incidence property results) |
+| **Ctrl+Enter** | Search ClinicalTrials.gov (on disease results) |
+| **Alt+Enter** | Search GWAS Catalog — by trait (diseases) or by gene (genes) |
+| **Cmd+Alt+Enter** | Open Gene Browser (on gene results) |
 
 The default action (Enter) is designed for quick information access without leaving your current app. For papers, it copies the summary; use Cmd+Enter if you want the full raw note instead.
+
+### Epi Calculator
+
+When viewing a prevalence or incidence property result, press **Cmd+Enter** to drill down into derived epidemiological measures:
+
+- Rate per 100k and per million
+- 1-in-N ratio
+- Estimated US, EU-5, and worldwide patient counts
+- Birth-based estimates (yearly US and worldwide births)
+- **Age-stratified breakdown** (if `prevalence_by_age` data is available): shows estimated patient counts per age band for US and EU-5, using census population data
+
+26 diseases currently have age-stratified prevalence data sourced from published meta-analyses (e.g., Tham 2014 for Glaucoma, Pringsheim 2014 for Parkinson's). Sources are cited in each disease note body.
+
+### Cross-Workflow Bridges
+
+QAK can hand off to external Alfred workflows using modifier keys:
+
+| Modifier | Context | Target Workflow |
+|----------|---------|----------------|
+| **Ctrl+Enter** | Disease result | ClinicalTrials.gov search (alfred-clinicalTrials) |
+| **Alt+Enter** | Disease result | GWAS Catalog trait search (alfred-GWAS) |
+| **Alt+Enter** | Gene result | GWAS Catalog gene search (alfred-GWAS) |
+| **Cmd+Alt+Enter** | Gene result | Gene Browser (lookup-gene) |
+
+These require the corresponding Alfred workflows to be installed with External Triggers configured.
 
 ## Rebuilding the Database
 
@@ -149,6 +178,15 @@ Papers have two kinds of summaries:
 Both are searchable. In results, the subtitle shows `summary:human` or `summary:ai` so you know the source. Papers with human summaries also have an AI summary appended (`# OBSummary_AI`) for comparison.
 
 GWAS papers with a known loci count have a `[Loci: N]` tag appended to the end of their AI summary for quick reference.
+
+## Tsundo Integration
+
+Paper titles and journals are enriched from the tsundo reference library (`library.db`) during database builds. The build script matches citekeys (case-insensitive) between QAK and tsundo, and:
+
+- Fills in `title` and `journal` in the QAK database where the vault YAML is empty
+- Adds a formatted citation line to paper notes that lack one (author, title, journal, year, PMID/DOI)
+
+Papers whose vault citekey doesn't match tsundo are listed as mismatches during the build — rename the note file in Obsidian to fix them.
 
 ## Environment Variables
 
