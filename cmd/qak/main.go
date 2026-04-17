@@ -55,10 +55,16 @@ func dbPath() string {
 	if p := os.Getenv("QAK_DB"); p != "" {
 		return p
 	}
-	if exe, err := os.Executable(); err == nil {
-		return filepath.Join(filepath.Dir(exe), "qak.db")
+	// Use os.Args[0] (preserves symlink/invocation path) rather than
+	// os.Executable() (resolves symlinks), so the DB is found relative
+	// to however the binary was called — works across machines.
+	arg0 := os.Args[0]
+	if !filepath.IsAbs(arg0) {
+		if wd, err := os.Getwd(); err == nil {
+			arg0 = filepath.Join(wd, arg0)
+		}
 	}
-	return "qak.db"
+	return filepath.Join(filepath.Dir(arg0), "qak.db")
 }
 
 func vaultDir() string {
