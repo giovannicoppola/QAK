@@ -82,7 +82,9 @@
       "Bash(QAK_DB=\"/Users/giovanni.coppola/Library/CloudStorage/OneDrive-RegeneronPharmaceuticals,Inc/MyScripts/myGitHubRepos/QAK/qak.db\" myIter=true myArg=\"epi:Glaucoma:prevalence:1250\" /tmp/qak-arm64 \"\")",
       "Bash(QAK_DB=\"/Users/giovanni.coppola/Library/CloudStorage/OneDrive-RegeneronPharmaceuticals,Inc/MyScripts/myGitHubRepos/QAK/qak.db\" myIter=1 myArg=\"epi:Glaucoma:prevalence:1250\" /tmp/qak-arm64 \"\")",
       "Bash(QAK_DB=\"/Users/giovanni.coppola/Library/CloudStorage/OneDrive-RegeneronPharmaceuticals,Inc/MyScripts/myGitHubRepos/QAK/qak.db\" myIter=1 myArg=\"epi:Alzheimer's Disease:prevalence:1100\" /tmp/qak-arm64 \"\")",
-      "Bash(QAK_DB=\"/Users/giovanni.coppola/Library/CloudStorage/OneDrive-RegeneronPharmaceuticals,Inc/MyScripts/myGitHubRepos/QAK/qak.db\" /tmp/qak-arm64 \"p:alzheimer gwas\")"
+      "Bash(QAK_DB=\"/Users/giovanni.coppola/Library/CloudStorage/OneDrive-RegeneronPharmaceuticals,Inc/MyScripts/myGitHubRepos/QAK/qak.db\" /tmp/qak-arm64 \"p:alzheimer gwas\")",
+      "Bash(bash *)",
+      "Bash(make build *)"
     ]
   }
 }

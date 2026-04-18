@@ -55,16 +55,30 @@ func dbPath() string {
 	if p := os.Getenv("QAK_DB"); p != "" {
 		return p
 	}
-	// Use os.Args[0] (preserves symlink/invocation path) rather than
-	// os.Executable() (resolves symlinks), so the DB is found relative
-	// to however the binary was called — works across machines.
+	// Try several candidate locations — the binary may be launched through
+	// a symlinked Alfred workflow directory, so the invocation path can
+	// point somewhere that doesn't contain qak.db.
+	var candidates []string
+	if exe, err := os.Executable(); err == nil {
+		candidates = append(candidates, filepath.Dir(exe))
+		if real, err := filepath.EvalSymlinks(exe); err == nil {
+			candidates = append(candidates, filepath.Dir(real))
+		}
+	}
 	arg0 := os.Args[0]
 	if !filepath.IsAbs(arg0) {
 		if wd, err := os.Getwd(); err == nil {
 			arg0 = filepath.Join(wd, arg0)
 		}
 	}
-	return filepath.Join(filepath.Dir(arg0), "qak.db")
+	candidates = append(candidates, filepath.Dir(arg0))
+	for _, dir := range candidates {
+		p := filepath.Join(dir, "qak.db")
+		if _, err := os.Stat(p); err == nil {
+			return p
+		}
+	}
+	return filepath.Join(candidates[0], "qak.db")
 }
 
 func vaultDir() string {

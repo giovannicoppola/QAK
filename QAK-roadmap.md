@@ -11,6 +11,24 @@ I usually codify note type with the title: notes starting with @ are papers (or 
 
 
 # Features to implement
+## Use cases
+- if I look for the largest GWAS or Exome study, or number of loci, or genes, the paper citekey should be listed in parentehses
+- the papers have multiple results (apparently one per property), there is no need for that. I just want the paper (with the title) and upon actioning the short summary (which is already there). Maybe we can add the abstract if actioning with
+  shift. 
+- there are still some papers without title (e.g. chabriat2009-zh)
+- for each paper, we should also record (and show in the subtitle) the reason it is in the database, or whatever 'distinction' it has: for example: largest GWAS for AMD, or 'pathogenesis of glaucoma' etc., so that if it comes up as a result in a
+  search I know why it is there
+- for each disease add 'disease_duration' property (numerical in years)
+- actioning "GWAS loci", or "WES loci" should provide a list of these loci, if such a list exists in the disease note, perhaps under a `## WES genes` section under `Genes`, which would include all genes implicated in this disease, including those
+  with no genetic evidence (other therapeutic targets etc.). actioning a gene should link to the gene resources as usual.
+
+# Bugs to fix
+
+
+ # Implemented Features (no need to revisit)
+
+
+
 Main goal is to plan a reorganization of the content of this vault (and possibly others) in a way that will facilitate the creation of the database described above, plus a general improvement in access and content management. Please review
 this document, then review all files in the `gitvault` Obsidian vault (`/Users/giovanni.coppola/Library/CloudStorage/OneDrive-RegeneronPharmaceuticals,Inc/MyScripts/myGitHubRepos/gitVault`) and come up with a strategy for reorganization described in a markdown document. Please detail the YAML properties and the text recurrent sections you propose for each note type. Estimate the number of disease, gene, paper etc. notes this reorg would affect. do not make any changes to notes just now, let's come up with a plan first, then try them. 
 
@@ -28,11 +46,4 @@ this document, then review all files in the `gitvault` Obsidian vault (`/Users/g
 5. add a `citekey` property with the citekey (which is typically the file name, without the `@`) 
 
 also, in Roam I had zettelkasten notes, key facts to remember, that started with `z:` which I think it has been variably converted (`:` removed because not allowed in file names etc), however they should all start with a z. How would you reorg these? In the alfred app, i envision havind a separate query that searches them for easy access
-
-# Bugs to fix
-
-
- # Implemented Features (no need to revisit)
-
-
 
