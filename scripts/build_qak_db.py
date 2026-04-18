@@ -137,7 +137,8 @@ CREATE TABLE IF NOT EXISTS diseases (
     heritability_twin TEXT,
     heritability_gwas TEXT,
     prevalence_by_age TEXT,
-    incidence_by_age TEXT
+    incidence_by_age TEXT,
+    disease_duration REAL
 );
 
 CREATE TABLE IF NOT EXISTS genes (
@@ -169,7 +170,9 @@ CREATE TABLE IF NOT EXISTS papers (
     n_total INTEGER,
     n_loci INTEGER,
     obs_summary TEXT,
-    obs_source TEXT
+    obs_source TEXT,
+    abstract TEXT,
+    distinction TEXT
 );
 
 CREATE TABLE IF NOT EXISTS clinical_trials (
@@ -335,8 +338,8 @@ def build_db():
                gwas_largest_n, gwas_loci, gwas_paper,
                wes_largest_n, wes_loci, wes_paper,
                heritability_twin, heritability_gwas,
-               prevalence_by_age, incidence_by_age)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+               prevalence_by_age, incidence_by_age, disease_duration)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (name, filename, s(fm.get("created")), s(fm.get("updated")),
              n(fm.get("prevalence_per_100k")), n(fm.get("incidence_per_100k")),
              n(fm.get("n_patients_us")), s(fm.get("lifetime_risk")),
@@ -344,7 +347,8 @@ def build_db():
              n(fm.get("gwas_largest_n")), n(fm.get("gwas_loci")), s(fm.get("gwas_paper")),
              n(fm.get("wes_largest_n")), n(fm.get("wes_loci")), s(fm.get("wes_paper")),
              s(fm.get("heritability_twin")), s(fm.get("heritability_gwas")),
-             s(fm.get("prevalence_by_age")), s(fm.get("incidence_by_age")))
+             s(fm.get("prevalence_by_age")), s(fm.get("incidence_by_age")),
+             n(fm.get("disease_duration")))
         )
         disease_ids[name] = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
 
@@ -396,20 +400,38 @@ def build_db():
         for row in tsundo.execute("SELECT citekey FROM entries"):
             tsundo_keys[row[0].lower()] = row[0]
 
+        # Build normalized lookup: underscore → hyphen for fuzzy matching
+        tsundo_norm = {}
+        for lk, rk in tsundo_keys.items():
+            tsundo_norm[lk.replace('_', '-')] = rk
+
         for citekey in paper_ids:
             real_key = tsundo_keys.get(citekey.lower())
+            # Fuzzy fallbacks: underscore/hyphen normalization, suffix variations
+            if not real_key:
+                norm = citekey.lower().replace('_', '-')
+                real_key = tsundo_norm.get(norm)
+            if not real_key:
+                # Try stripping last 2 suffix chars and matching prefix
+                base = re.match(r'(.+\d{4})-(\w+)$', citekey.lower().replace('_', '-'))
+                if base:
+                    prefix = base.group(1) + "-"
+                    for lk, rk in tsundo_norm.items():
+                        if lk.startswith(prefix):
+                            real_key = rk
+                            break
             if not real_key:
                 # Not a book (has hyphen suffix like Author2020-xx)
                 if re.match(r'.+\d{4}-\w+$', citekey):
                     not_found.append(citekey)
                 continue
             row = tsundo.execute(
-                "SELECT title, journal, author, year, volume, issue, pages, doi, pmid, pmc "
+                "SELECT title, journal, author, year, volume, issue, pages, doi, pmid, pmc, abstract "
                 "FROM entries WHERE citekey = ?", (real_key,)
             ).fetchone()
             if not row:
                 continue
-            t, j, author, year, volume, issue, pages, doi, pmid, pmc = row
+            t, j, author, year, volume, issue, pages, doi, pmid, pmc, abstract = row
             if t:
                 t = re.sub(r'[{}]', '', t)  # strip BibTeX braces
 
@@ -443,8 +465,9 @@ def build_db():
 
             conn.execute(
                 "UPDATE papers SET title = COALESCE(NULLIF(title,''), ?), "
-                "journal = COALESCE(NULLIF(journal,''), ?) WHERE citekey = ?",
-                (t, j, citekey))
+                "journal = COALESCE(NULLIF(journal,''), ?), "
+                "abstract = COALESCE(NULLIF(abstract,''), ?) WHERE citekey = ?",
+                (t, j, abstract, citekey))
             enriched += 1
 
             # Write full reference to vault note if body lacks a citation line
@@ -474,13 +497,49 @@ def build_db():
                                 fpath.write_text(new_content, encoding="utf-8")
 
         tsundo.close()
-        print(f"  tsundo enriched: {enriched}/{len(paper_ids)} papers (title, journal)")
+        print(f"  tsundo enriched: {enriched}/{len(paper_ids)} papers (title, journal, abstract)")
         if not_found:
             print(f"  tsundo mismatches ({len(not_found)}):")
             for ck in sorted(not_found):
                 print(f"    {ck}")
     else:
         print(f"  tsundo: library.db not found, skipping enrichment")
+
+    # ---- Derive paper distinctions from disease references ----
+    def add_distinction(ck, text):
+        """Append a distinction tag to a paper, avoiding duplicates."""
+        row = conn.execute("SELECT distinction FROM papers WHERE citekey = ?", (ck,)).fetchone()
+        if not row:
+            return
+        current = row[0] or ""
+        if text in current:
+            return
+        new_val = (current + "; " + text).lstrip("; ")
+        conn.execute("UPDATE papers SET distinction = ? WHERE citekey = ?", (new_val, ck))
+
+    distinctions = 0
+    for dname, did in disease_ids.items():
+        row = conn.execute(
+            "SELECT gwas_paper, wes_paper FROM diseases WHERE id = ?", (did,)
+        ).fetchone()
+        if not row:
+            continue
+        gwas_p, wes_p = row
+        if gwas_p and gwas_p in paper_ids:
+            add_distinction(gwas_p, f"GWAS ref for {dname}")
+            distinctions += 1
+        if wes_p and wes_p in paper_ids:
+            add_distinction(wes_p, f"WES ref for {dname}")
+            distinctions += 1
+    # Also mark papers linked via key_papers in gene notes
+    for filename, fm, body in notes.get("gene", []):
+        symbol = fm.get("symbol", filename.replace(".md", "").lstrip("^"))
+        for ck in fm.get("key_papers", []):
+            clean = ck.lstrip("@")
+            if clean in paper_ids:
+                add_distinction(clean, f"key paper for {symbol}")
+                distinctions += 1
+    print(f"  paper distinctions: {distinctions}")
 
     # ---- Clinical Trials ----
     for filename, fm, body in notes.get("clinical_trial", []):

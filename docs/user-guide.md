@@ -34,17 +34,18 @@ QAK also searches individual database fields as standalone items, so you can loo
 ```
 qak als incid       → ALS incidence: 2 /100k     (copied to clipboard)
 qak als prev        → ALS prevalence: 4.5 /100k
-qak alz gwas loci   → Alzheimer's Disease GWAS loci: 38
+qak alz gwas loci   → Alzheimer's Disease GWAS loci: 38 (Wightman2021-je)
 qak APP chrom       → APP chromosome: 21
 qak GBA protein     → GBA protein length: 536 aa
 ```
 
 Property results show as `🦠 ALS — incidence: 2 /100k`. Pressing Enter copies the full label and value to clipboard (e.g., `ALS incidence: 2 /100k`).
 
+GWAS/WES loci and sample size properties include the paper citekey in parentheses for quick reference. Press **Cmd+Enter** on a GWAS/WES loci result to drill down into the associated genes.
+
 Searchable properties include:
-- **Diseases**: prevalence, incidence, US patients, lifetime risk, OMIM/MONDO/Orphanet, GWAS/WES stats, heritability, prevalence by age
+- **Diseases**: prevalence, incidence, US patients, lifetime risk, disease duration, OMIM/MONDO/Orphanet, GWAS/WES stats, heritability, prevalence by age
 - **Genes**: full name, chromosome, cytoband, protein length
-- **Papers**: study type, author, year, journal, sample sizes, loci
 - **Trials**: drug, phase, outcome, status, enrollment, modality, company, endpoint
 
 ### Filtered Search
@@ -90,7 +91,7 @@ Each result is prefixed with an emoji indicating its type:
 |-------|------|-------------|
 | `🦠` | Disease | Name, US patients, prevalence, GWAS loci, paper/trial counts |
 | `🧬` | Gene | Symbol, full name, chromosome, disease/paper counts |
-| `📄` | Paper | Author (year) — Title, study type, sample size, summary source |
+| `📄` | Paper | Author (year) — Title, distinction, study type, sample size, summary source |
 | `💊` | Trial | Trial name, drug, phase, outcome, disease(s) |
 | `🎯` | Strategy | Name, modality, disease(s), target genes |
 | (none) | Zettel | Fact text, category, disease/gene tags |
@@ -103,8 +104,7 @@ Each result is prefixed with an emoji indicating its type:
 | **Cmd+L** | Large Type — read the full note text in a floating overlay |
 | **Cmd+C** | Quick copy while browsing (same as Enter) |
 | **Shift+Enter** | Open the note in Obsidian |
-| **Cmd+Enter** | Copy full note body (papers: bypasses summary, gives raw note) |
-| **Cmd+Enter** | Epi calculator drill-down (on prevalence/incidence property results) |
+| **Cmd+Enter** | Papers: copy abstract (or full note if no abstract). Properties: epi or gene drill-down |
 | **Ctrl+Enter** | Search ClinicalTrials.gov (on disease results) |
 | **Alt+Enter** | Search GWAS Catalog — by trait (diseases) or by gene (genes) |
 | **Cmd+Alt+Enter** | Open Gene Browser (on gene results) |
@@ -168,7 +168,7 @@ QAK generates auto-updated summary notes in your vault, prefixed with `QAK —`.
 | QAK — Trials for *Disease* | Trials for a specific disease |
 | QAK — Strategies for *Disease* | Therapeutic strategies for a disease |
 
-## Paper Summaries
+## Paper Summaries and Abstracts
 
 Papers have two kinds of summaries:
 
@@ -178,6 +178,10 @@ Papers have two kinds of summaries:
 Both are searchable. In results, the subtitle shows `summary:human` or `summary:ai` so you know the source. Papers with human summaries also have an AI summary appended (`# OBSummary_AI`) for comparison.
 
 GWAS papers with a known loci count have a `[Loci: N]` tag appended to the end of their AI summary for quick reference.
+
+**Abstracts** are imported from the tsundo reference library during database builds. Press **Cmd+Enter** on a paper result to copy the abstract to clipboard. If no abstract is available, the full note body is copied instead.
+
+**Distinctions** show why a paper is notable — e.g., "GWAS ref for ALS" or "key paper for APOE". These appear at the start of the subtitle so you can immediately see the paper's significance.
 
 ## Tsundo Integration
 

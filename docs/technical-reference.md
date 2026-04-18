@@ -72,6 +72,7 @@ type: disease
 created, updated, aliases, tags
 prevalence_per_100k, incidence_per_100k, n_patients_us, lifetime_risk
 prevalence_by_age, incidence_by_age   # e.g. "65-74:5000, 75-84:13000, 85+:33000"
+disease_duration     # average duration in years (numerical)
 omim, mondo, orphanet
 gwas_largest_n, gwas_loci, gwas_paper
 wes_largest_n, wes_loci, wes_paper
@@ -108,6 +109,15 @@ obs_source            # "human" | "ai" | (blank)
 ```
 
 Paper titles are typically empty in vault YAML and are enriched from the tsundo reference library during database builds. Titles display in Alfred results as `📄 Author (Year) — Title…` (truncated at 60 chars).
+
+The `abstract` column is populated from tsundo's BibTeX `abstract` field during enrichment. In Alfred, Cmd+Enter copies the abstract if available, otherwise the full note body.
+
+The `distinction` column is derived during DB build:
+- If a paper is referenced as a disease's `gwas_paper` or `wes_paper`, it gets "GWAS ref for {disease}" / "WES ref for {disease}"
+- If listed in a gene's `key_papers`, it gets "key paper for {gene}"
+- Multiple distinctions are semicolon-separated
+
+Distinctions display as the first item in the Alfred subtitle, so users immediately see why a paper appears in search results.
 
 Paper summaries are stored in the note body, not in YAML:
 - `# OBSummary_AI` — AI-generated ~250-char summary (411 papers). GWAS papers with `n_loci` have a `[Loci: N]` tag appended to the summary.
@@ -252,17 +262,22 @@ Each search function runs a `SELECT ... WHERE col1 LIKE ? OR col2 LIKE ? ...` qu
 
 Wide search (`searchAll`) calls all 7 functions sequentially and concatenates results, capped at 40 total items. Individual searches are capped at 20 per type. Result priority order: **properties → diseases → genes → trials → strategies → zettels → papers**. Papers are last so that quick-fact results surface first.
 
-On startup, the binary checks for `myIter`/`myArg` environment variables (set by Alfred's recursive drill-down). If present, it routes directly to `epiDrillDown()` instead of normal search.
+On startup, the binary checks for `myIter`/`myArg` environment variables (set by Alfred's recursive drill-down). If present, it routes to the appropriate drill-down:
+- `epi:DISEASE:TYPE:RATE` → `epiDrillDown()` (prevalence/incidence derived measures)
+- `genes:DISEASE` → `genesDrillDown()` (genes associated with a disease)
 
 ### Property search
 
-`searchProperties()` explodes entity fields into individual searchable items. It loads all rows from diseases, genes, papers, and clinical_trials, then builds an in-memory list of `(entity, label, value)` tuples (37 fields across 4 entity types). Fuzzy matching runs against the concatenation of entity name + label + value, so "als incid" matches entity "ALS" + label "incidence".
+`searchProperties()` explodes entity fields into individual searchable items. It loads all rows from diseases, genes, and clinical_trials, then builds an in-memory list of `(entity, label, value)` tuples. Fuzzy matching runs against the concatenation of entity name + label + value, so "als incid" matches entity "ALS" + label "incidence".
+
+GWAS/WES property rows (loci, largest N) include the paper citekey in parentheses when available: `GWAS loci: 38 (Wightman2021-je)`. The standalone "GWAS paper" and "WES paper" rows are no longer shown (the citekey is now embedded in the loci/N rows). GWAS/WES loci items include a Cmd modifier that drills down into associated genes via `genesDrillDown()`.
 
 Searchable properties:
-- **Diseases** (17 fields): prevalence, incidence, US patients, lifetime risk, prevalence by age, incidence by age, OMIM, MONDO, Orphanet, GWAS largest N/loci/paper, WES largest N/loci/paper, heritability twin/GWAS
+- **Diseases** (16 fields): prevalence, incidence, US patients, lifetime risk, disease duration, OMIM, MONDO, Orphanet, GWAS largest N/loci, WES largest N/loci, heritability twin/GWAS
 - **Genes** (4 fields): full name, chromosome, cytoband, protein length
-- **Papers** (8 fields): study type, first author, year, journal, N cases/controls/total, N loci
 - **Trials** (8 fields): drug, phase, outcome, status, N enrolled, modality, company, primary endpoint
+
+Paper properties have been removed from property search — papers are now exclusively shown as full items in `searchPapers()`, with title, distinction, and abstract support.
 
 The clipboard text (`arg`) includes the full label: `ALS incidence: 2 /100k`. The title shows `🦠 ALS — incidence: 2 /100k`.
 
@@ -295,12 +310,12 @@ Alfred Script Filter JSON:
 | Cmd+L | `text.largetype` | Full note displayed in Large Type overlay |
 | Cmd+C | `text.copy` | Same as Enter (quick copy while browsing) |
 | Shift+Enter | `mods.shift.arg` | Opens `obsidian://` URI in Obsidian |
-| Cmd+Enter | `mods.cmd.arg` | Papers: full raw note body. Properties: epi drill-down |
+| Cmd+Enter | `mods.cmd.arg` | Papers: abstract (or full note). Properties: epi drill-down or gene drill-down |
 | Ctrl+Enter | `mods.ctrl.arg` | Diseases: ClinicalTrials.gov external trigger |
 | Alt+Enter | `mods.alt.arg` | Diseases: GWAS trait search. Genes: GWAS gene search |
 | Cmd+Alt+Enter | `mods.cmd+alt.arg` | Genes: Gene Browser external trigger |
 
-For papers, the default `arg` is the summary (human or AI). Cmd+Enter gives the full raw note body instead. For all other types, `arg` is the full note body (frontmatter stripped).
+For papers, the default `arg` is the summary (human or AI). Cmd+Enter copies the abstract if available (from tsundo), otherwise the full raw note body. For all other types, `arg` is the full note body (frontmatter stripped).
 
 ### Epi calculator drill-down
 
@@ -324,6 +339,12 @@ When Cmd+Enter is pressed, Alfred re-invokes the Script Filter with `myIter` and
 - Age-stratified section: for each age band, shows rate per 100k and estimated US/EU-5 patient counts using built-in census population data
 
 Census data covers 5-year age bands for the US (2020 Census) and EU-5 (France, Germany, Italy, Spain, UK). `popForRange()` sums overlapping bands for arbitrary age range strings.
+
+### Gene drill-down
+
+GWAS loci and WES loci property items include a `mods.cmd` block with `myArg="genes:DISEASE_NAME"`. When Cmd+Enter is pressed, the binary detects the `genes:` prefix and routes to `genesDrillDown()`.
+
+`genesDrillDown()` queries the `disease_gene` junction table to find all genes linked to the disease, sorted by paper count. Each gene item includes the standard gene modifiers (Alt = GWAS Catalog, Cmd+Alt = Gene Browser) and Shift = Open in Obsidian.
 
 ### External workflow bridges
 
@@ -396,14 +417,26 @@ The migration scripts (phases 1–8) are one-time operations and are not re-run 
 
 After inserting all papers from vault YAML, `build_qak_db.py` enriches them from the tsundo reference library (`library.db`, ~10,500 BibTeX entries):
 
-1. **Citekey matching** — case-insensitive lookup against tsundo's `entries` table
-2. **Title and journal** — fills in QAK's `title` and `journal` columns where the vault YAML is empty (uses `COALESCE(NULLIF(...), ?)` so existing vault values take priority)
+1. **Citekey matching** — multi-level fuzzy matching:
+   - Case-insensitive lookup against tsundo's `entries` table
+   - Underscore/hyphen normalization (`Le_Guen` matches `Le-Guen`)
+   - Prefix-based suffix fallback: if `Author2020-xx` fails, try any tsundo key starting with `Author2020-`
+2. **Title, journal, and abstract** — fills in QAK's `title`, `journal`, and `abstract` columns where the vault YAML is empty (uses `COALESCE(NULLIF(...), ?)` so existing vault values take priority)
 3. **Citation insertion** — for paper notes whose body lacks a citation (checked via PMID, DOI, or journal name), a formatted reference line is prepended: `Author, Title. Journal (Year);Vol(Issue):Pages. PMID/DOI`
-4. **Mismatch reporting** — citekeys present in the vault but not found in tsundo (even case-insensitively) are printed during the build for manual correction
+4. **Mismatch reporting** — citekeys present in the vault but not found in tsundo (even with fuzzy matching) are printed during the build for manual correction
 
-Current enrichment: 659/722 papers matched. 11 citekey mismatches due to naming differences (e.g., `Le_Guen` vs `Le-Guen`, different suffixes).
+Current enrichment: 664/722 papers matched. 6 remaining citekey mismatches.
 
 The tsundo database path is configured as `TSUNDO_DB` at the top of `build_qak_db.py`. If `library.db` is not found, enrichment is silently skipped.
+
+## Paper Distinction
+
+After tsundo enrichment, `build_qak_db.py` derives a `distinction` tag for papers that have a notable role:
+- Papers referenced as a disease's `gwas_paper` → "GWAS ref for {disease}"
+- Papers referenced as a disease's `wes_paper` → "WES ref for {disease}"
+- Papers listed in a gene's `key_papers` → "key paper for {gene}"
+
+Multiple distinctions are semicolon-separated. Currently 101 distinction tags are assigned. The distinction displays as the first element in the Alfred subtitle.
 
 ## Known Limitations
 

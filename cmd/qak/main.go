@@ -372,7 +372,8 @@ func searchPapers(db *sql.DB, q string) []AlfredItem {
 	})
 	rows, err := db.Query(`
 		SELECT p.citekey, p.filename, p.first_author, p.year, p.study_type,
-		       p.n_total, p.n_loci, p.obs_summary, p.obs_source, p.title, p.journal
+		       p.n_total, p.n_loci, p.obs_summary, p.obs_source, p.title, p.journal,
+		       p.abstract, p.distinction
 		FROM papers p
 		WHERE `+where+`
 		ORDER BY p.year DESC
@@ -386,9 +387,10 @@ func searchPapers(db *sql.DB, q string) []AlfredItem {
 	for rows.Next() {
 		var citekey, filename string
 		var author, studyType, summary, obsSource, title, journal sql.NullString
+		var abstract, distinction sql.NullString
 		var year, nTotal, nLoci sql.NullInt64
 		rows.Scan(&citekey, &filename, &author, &year, &studyType, &nTotal, &nLoci,
-			&summary, &obsSource, &title, &journal)
+			&summary, &obsSource, &title, &journal, &abstract, &distinction)
 
 		displayTitle := citekey
 		if s := orEmpty(author); s != "" {
@@ -406,6 +408,7 @@ func searchPapers(db *sql.DB, q string) []AlfredItem {
 		}
 
 		sub := join([]string{
+			orEmpty(distinction),
 			orEmpty(studyType),
 			func() string {
 				if s := fmtNum(nTotal); s != "" {
@@ -429,6 +432,7 @@ func searchPapers(db *sql.DB, q string) []AlfredItem {
 
 		summaryText := orEmpty(summary)
 		body := readNoteBody(filename)
+		abstractText := orEmpty(abstract)
 
 		argText := summaryText
 		if argText == "" {
@@ -444,6 +448,14 @@ func searchPapers(db *sql.DB, q string) []AlfredItem {
 		}
 		largeText = truncate(largeText, 10000)
 
+		// Cmd modifier: show abstract if available, else full note
+		cmdArg := truncate(body, 10000)
+		cmdSub := "⌘↵ Copy full note"
+		if abstractText != "" {
+			cmdArg = truncate(abstractText, 10000)
+			cmdSub = "⌘↵ Copy abstract"
+		}
+
 		item := AlfredItem{
 			Title:    "📄 " + displayTitle,
 			Subtitle: sub,
@@ -452,7 +464,7 @@ func searchPapers(db *sql.DB, q string) []AlfredItem {
 			Text:     &AlfredText{Copy: argText, Largetype: largeText},
 			Mods: map[string]AlfMod{
 				"shift": {Arg: obsidianURI(filename), Subtitle: "⇧↵ Open in Obsidian"},
-				"cmd":   {Arg: truncate(body, 10000), Subtitle: "⌘↵ Copy full note"},
+				"cmd":   {Arg: cmdArg, Subtitle: cmdSub},
 			},
 		}
 		items = append(items, item)
@@ -648,19 +660,19 @@ func searchProperties(db *sql.DB, q string) []AlfredItem {
 		       n_patients_us, lifetime_risk, omim, mondo, orphanet,
 		       gwas_largest_n, gwas_loci, gwas_paper,
 		       wes_largest_n, wes_loci, wes_paper,
-		       heritability_twin, heritability_gwas
+		       heritability_twin, heritability_gwas, disease_duration
 		FROM diseases`)
 	if err == nil {
 		defer diseaseRows.Close()
 		for diseaseRows.Next() {
 			var name, filename string
-			var prev, incid sql.NullFloat64
+			var prev, incid, duration sql.NullFloat64
 			var nUS, gwasN, gwasLoci, wesN, wesLoci sql.NullInt64
 			var risk, omim, mondo, orphanet sql.NullString
 			var gwasPaper, wesPaper, herTwin, herGwas sql.NullString
 			diseaseRows.Scan(&name, &filename, &prev, &incid, &nUS, &risk,
 				&omim, &mondo, &orphanet, &gwasN, &gwasLoci, &gwasPaper,
-				&wesN, &wesLoci, &wesPaper, &herTwin, &herGwas)
+				&wesN, &wesLoci, &wesPaper, &herTwin, &herGwas, &duration)
 
 			add := func(label, val, unit string) {
 				if val != "" {
@@ -671,15 +683,33 @@ func searchProperties(db *sql.DB, q string) []AlfredItem {
 			add("incidence", fmtFloat(incid), " /100k")
 			add("US patients", fmtNum(nUS), "")
 			add("lifetime risk", orEmpty(risk), "")
+			add("disease duration", fmtFloat(duration), " years")
 			add("OMIM", orEmpty(omim), "")
 			add("MONDO", orEmpty(mondo), "")
 			add("Orphanet", orEmpty(orphanet), "")
-			add("GWAS largest N", fmtNum(gwasN), "")
-			add("GWAS loci", fmtNum(gwasLoci), "")
-			add("GWAS paper", orEmpty(gwasPaper), "")
-			add("WES largest N", fmtNum(wesN), "")
-			add("WES loci", fmtNum(wesLoci), "")
-			add("WES paper", orEmpty(wesPaper), "")
+			// GWAS/WES stats: append citekey in parentheses when available
+			gwp := orEmpty(gwasPaper)
+			if v := fmtNum(gwasN); v != "" {
+				suffix := ""
+				if gwp != "" { suffix = " (" + gwp + ")" }
+				add("GWAS largest N", v, suffix)
+			}
+			if v := fmtNum(gwasLoci); v != "" {
+				suffix := ""
+				if gwp != "" { suffix = " (" + gwp + ")" }
+				add("GWAS loci", v, suffix)
+			}
+			wep := orEmpty(wesPaper)
+			if v := fmtNum(wesN); v != "" {
+				suffix := ""
+				if wep != "" { suffix = " (" + wep + ")" }
+				add("WES largest N", v, suffix)
+			}
+			if v := fmtNum(wesLoci); v != "" {
+				suffix := ""
+				if wep != "" { suffix = " (" + wep + ")" }
+				add("WES loci", v, suffix)
+			}
 			add("heritability twin", orEmpty(herTwin), "")
 			add("heritability GWAS", orEmpty(herGwas), "")
 		}
@@ -706,36 +736,6 @@ func searchProperties(db *sql.DB, q string) []AlfredItem {
 			add("chromosome", orEmpty(chrom), "")
 			add("cytoband", orEmpty(cytoband), "")
 			add("protein length", fmtNum(protLen), " aa")
-		}
-	}
-
-	// Paper properties
-	paperRows, err := db.Query(`
-		SELECT citekey, filename, study_type, first_author, year, journal,
-		       n_cases, n_controls, n_total, n_loci
-		FROM papers`)
-	if err == nil {
-		defer paperRows.Close()
-		for paperRows.Next() {
-			var citekey, filename string
-			var studyType, author, journal sql.NullString
-			var year, nCases, nControls, nTotal, nLoci sql.NullInt64
-			paperRows.Scan(&citekey, &filename, &studyType, &author, &year,
-				&journal, &nCases, &nControls, &nTotal, &nLoci)
-
-			add := func(label, val, unit string) {
-				if val != "" {
-					rows = append(rows, propRow{citekey, label, val, unit, filename, "📄"})
-				}
-			}
-			add("study type", orEmpty(studyType), "")
-			add("first author", orEmpty(author), "")
-			add("year", fmtNum(year), "")
-			add("journal", orEmpty(journal), "")
-			add("N cases", fmtNum(nCases), "")
-			add("N controls", fmtNum(nControls), "")
-			add("N total", fmtNum(nTotal), "")
-			add("N loci", fmtNum(nLoci), "")
 		}
 	}
 
@@ -806,6 +806,19 @@ func searchProperties(db *sql.DB, q string) []AlfredItem {
 				},
 			}
 			subtitle = "↵ copy · ⌘↵ derived measures · ⇧↵ Obsidian"
+		}
+
+		// For GWAS/WES loci, add Cmd+Enter to drill into associated genes
+		if r.label == "GWAS loci" || r.label == "WES loci" {
+			mods["cmd"] = AlfMod{
+				Arg:      clipText,
+				Subtitle: "⌘↵ Show associated genes",
+				Variables: AlfredVariables{
+					"myIter": true,
+					"myArg":  fmt.Sprintf("genes:%s", r.entity),
+				},
+			}
+			subtitle = "↵ copy · ⌘↵ genes · ⇧↵ Obsidian"
 		}
 
 		items = append(items, AlfredItem{
@@ -1093,6 +1106,66 @@ func epiDrillDown(db *sql.DB, disease, rateType string, ratePer100k float64) []A
 }
 
 // -----------------------------------------------------------------------
+// Gene drill-down: show genes associated with a disease
+// -----------------------------------------------------------------------
+
+func genesDrillDown(db *sql.DB, disease string) []AlfredItem {
+	rows, err := db.Query(`
+		SELECT g.symbol, g.filename, g.full_name, g.chromosome, g.protein_length,
+		       (SELECT COUNT(*) FROM gene_paper gp WHERE gp.gene_id = g.id)
+		FROM genes g
+		JOIN disease_gene dg ON g.id = dg.gene_id
+		JOIN diseases d ON d.id = dg.disease_id
+		WHERE d.name = ?
+		ORDER BY (SELECT COUNT(*) FROM gene_paper gp WHERE gp.gene_id = g.id) DESC`,
+		disease)
+	if err != nil {
+		return nil
+	}
+	defer rows.Close()
+
+	var items []AlfredItem
+	for rows.Next() {
+		var symbol, filename string
+		var fullName, chrom sql.NullString
+		var protLen, nPapers sql.NullInt64
+		rows.Scan(&symbol, &filename, &fullName, &chrom, &protLen, &nPapers)
+
+		sub := join([]string{
+			orEmpty(fullName),
+			func() string {
+				if s := orEmpty(chrom); s != "" {
+					return "chr" + s
+				}
+				return ""
+			}(),
+			fmt.Sprintf("%d papers", nPapers.Int64),
+		})
+
+		item := makeItem("🧬 "+symbol, sub, filename, "gene:"+symbol)
+		item.Mods["alt"] = AlfMod{
+			Arg:      symbol,
+			Subtitle: "⌥↵ GWAS Catalog (gene)",
+			Variables: AlfredVariables{"myMode": "gwas_gene", "myENTRY_Q": symbol},
+		}
+		item.Mods["cmd+alt"] = AlfMod{
+			Arg:      symbol,
+			Subtitle: "⌥⌘↵ Gene Browser",
+			Variables: AlfredVariables{"myMode": "gene_browser", "myENTRY_Q": symbol},
+		}
+		items = append(items, item)
+	}
+
+	if len(items) == 0 {
+		items = append(items, AlfredItem{
+			Title:    "No genes linked to " + disease,
+			Subtitle: "Check disease_gene junction table",
+		})
+	}
+	return items
+}
+
+// -----------------------------------------------------------------------
 // Wide search: all entity types
 // -----------------------------------------------------------------------
 
@@ -1163,6 +1236,25 @@ func main() {
 					return
 				}
 			}
+		}
+
+		// Parse gene drill-down: "genes:DISEASE_NAME"
+		if strings.HasPrefix(myArg, "genes:") {
+			disease := myArg[6:]
+			items := genesDrillDown(db, disease)
+			total := len(items)
+			for i := range items {
+				if items[i].Subtitle != "" {
+					items[i].Subtitle = fmt.Sprintf("%d/%d %s", i+1, total, items[i].Subtitle)
+				} else {
+					items[i].Subtitle = fmt.Sprintf("%d/%d", i+1, total)
+				}
+			}
+			output := AlfredOutput{Items: items}
+			enc := json.NewEncoder(os.Stdout)
+			enc.SetEscapeHTML(false)
+			enc.Encode(output)
+			return
 		}
 	}
 

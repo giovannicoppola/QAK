@@ -12,20 +12,17 @@ I usually codify note type with the title: notes starting with @ are papers (or 
 
 # Features to implement
 ## Use cases
-- if I look for the largest GWAS or Exome study, or number of loci, or genes, the paper citekey should be listed in parentehses
-- the papers have multiple results (apparently one per property), there is no need for that. I just want the paper (with the title) and upon actioning the short summary (which is already there). Maybe we can add the abstract if actioning with
-  shift. 
-- there are still some papers without title (e.g. chabriat2009-zh)
-- for each paper, we should also record (and show in the subtitle) the reason it is in the database, or whatever 'distinction' it has: for example: largest GWAS for AMD, or 'pathogenesis of glaucoma' etc., so that if it comes up as a result in a
-  search I know why it is there
-- for each disease add 'disease_duration' property (numerical in years)
-- actioning "GWAS loci", or "WES loci" should provide a list of these loci, if such a list exists in the disease note, perhaps under a `## WES genes` section under `Genes`, which would include all genes implicated in this disease, including those
-  with no genetic evidence (other therapeutic targets etc.). actioning a gene should link to the gene resources as usual.
 
 # Bugs to fix
 
 
  # Implemented Features (no need to revisit)
+- GWAS/WES citekey shown in parentheses after loci/N property values (e.g. "GWAS loci: 38 (Wightman2021-je)")
+- Papers show as single result with title; Cmd+Enter copies abstract (from tsundo). Paper property rows removed.
+- Fuzzy tsundo citekey matching: underscore/hyphen normalization, suffix prefix fallback (reduced mismatches from 11 to 6)
+- Paper distinction derived from disease gwas_paper/wes_paper refs and gene key_papers; shown in subtitle
+- disease_duration property added to diseases table (populated by user in vault YAML)
+- Gene drill-down from GWAS/WES loci: Cmd+Enter on loci items shows associated genes with GWAS/Gene Browser modifiers
 
 
 
