@@ -8,3 +8,6 @@
 # Temp files
 /tmp/
 *.jsonl
+
+# Claude Code local settings
+.claude/

@@ -21,6 +21,7 @@ type AlfredItem struct {
 	Arg          string            `json:"arg"`
 	Icon         *AlfredIcon       `json:"icon,omitempty"`
 	Autocomplete string            `json:"autocomplete,omitempty"`
+	Valid        *bool             `json:"valid,omitempty"`
 	Text         *AlfredText       `json:"text,omitempty"`
 	Mods         map[string]AlfMod `json:"mods,omitempty"`
 	Variables    AlfredVariables   `json:"variables,omitempty"`
@@ -45,8 +46,9 @@ type AlfMod struct {
 }
 
 type AlfredOutput struct {
-	Items     []AlfredItem    `json:"items"`
-	Variables AlfredVariables `json:"variables,omitempty"`
+	Items         []AlfredItem    `json:"items"`
+	Variables     AlfredVariables `json:"variables,omitempty"`
+	SkipKnowledge bool            `json:"skipknowledge,omitempty"`
 }
 
 // Paths
@@ -166,6 +168,416 @@ func truncate(s string, max int) string {
 		return s[:max] + "\n\n[truncated]"
 	}
 	return s
+}
+
+// -----------------------------------------------------------------------
+// Flag-based autocomplete (--disease, --gene, etc.)
+// -----------------------------------------------------------------------
+
+type flagDef struct {
+	flag     string // e.g. "disease"
+	desc     string // shown in subtitle
+	icon     string // emoji
+	filter   string // maps to existing filter type
+}
+
+var flagDefs = []flagDef{
+	{"disease", "Filter by disease", "🦠", "disease"},
+	{"gene", "Filter by gene", "🧬", "gene"},
+	{"paper", "Filter by paper", "📄", "paper"},
+	{"trial", "Filter by clinical trial", "💊", "trial"},
+	{"strategy", "Filter by therapeutic strategy", "🎯", "strategy"},
+	{"zettel", "Filter by zettel", "📝", "zettel"},
+}
+
+func isTypingFlag(raw string) bool {
+	trimmed := strings.TrimSpace(raw)
+	return strings.HasSuffix(trimmed, "--")
+}
+
+func isPartialFlag(raw string) bool {
+	if strings.HasSuffix(raw, " ") {
+		return false
+	}
+	trimmed := strings.TrimSpace(raw)
+	if !strings.Contains(trimmed, "--") {
+		return false
+	}
+	idx := strings.LastIndex(trimmed, "--")
+	after := trimmed[idx+2:]
+	if after == "" {
+		return false
+	}
+	return !strings.Contains(after, " ")
+}
+
+func getBaseQuery(raw string) string {
+	idx := strings.LastIndex(raw, "--")
+	if idx < 0 {
+		return ""
+	}
+	return strings.TrimSpace(raw[:idx])
+}
+
+func getPartialFlagText(raw string) string {
+	trimmed := strings.TrimSpace(raw)
+	idx := strings.LastIndex(trimmed, "--")
+	if idx < 0 {
+		return ""
+	}
+	return strings.TrimSpace(trimmed[idx+2:])
+}
+
+func buildFlagSuggestions(raw string) []AlfredItem {
+	base := getBaseQuery(raw)
+	partial := ""
+	if isPartialFlag(raw) {
+		partial = strings.ToLower(getPartialFlagText(raw))
+	}
+
+	falseVal := false
+	var items []AlfredItem
+	for _, f := range flagDefs {
+		if partial != "" && !strings.Contains(f.flag, partial) {
+			continue
+		}
+		ac := "--" + f.flag + " "
+		if base != "" {
+			ac = base + " " + ac
+		}
+		items = append(items, AlfredItem{
+			Title:        f.icon + " --" + f.flag,
+			Subtitle:     f.desc,
+			Autocomplete: ac,
+			Valid:        &falseVal,
+			UID:          "flag:" + f.flag,
+		})
+	}
+	return items
+}
+
+func listEntityValues(db *sql.DB, filter, query string) []AlfredItem {
+	switch filter {
+	case "disease":
+		return listDiseases(db, query)
+	case "gene":
+		return listGenes(db, query)
+	case "paper":
+		return listPapers(db, query)
+	case "trial":
+		return listTrials(db, query)
+	case "strategy":
+		return listStrategies(db, query)
+	case "zettel":
+		return listZettels(db, query)
+	}
+	return nil
+}
+
+func listDiseases(db *sql.DB, q string) []AlfredItem {
+	var where string
+	var args []interface{}
+	if q != "" {
+		where, args = fuzzyWhere(q, []string{"d.name"})
+	} else {
+		where = "1=1"
+	}
+	rows, err := db.Query(`
+		SELECT d.name FROM diseases d WHERE `+where+`
+		ORDER BY (SELECT COUNT(*) FROM disease_paper dp WHERE dp.disease_id = d.id) DESC
+		LIMIT 30`, args...)
+	if err != nil {
+		return nil
+	}
+	defer rows.Close()
+	falseVal := false
+	var items []AlfredItem
+	for rows.Next() {
+		var name string
+		rows.Scan(&name)
+		items = append(items, AlfredItem{
+			Title:        "🦠 " + name,
+			Subtitle:     "Select to filter by this disease",
+			Autocomplete: "--disease " + name + " ",
+			Valid:        &falseVal,
+			UID:          "pick:disease:" + name,
+		})
+	}
+	return items
+}
+
+func listGenes(db *sql.DB, q string) []AlfredItem {
+	var where string
+	var args []interface{}
+	if q != "" {
+		where, args = fuzzyWhere(q, []string{"g.symbol", "g.full_name"})
+	} else {
+		where = "1=1"
+	}
+	rows, err := db.Query(`
+		SELECT g.symbol FROM genes g WHERE `+where+`
+		ORDER BY (SELECT COUNT(*) FROM gene_paper gp WHERE gp.gene_id = g.id) DESC
+		LIMIT 30`, args...)
+	if err != nil {
+		return nil
+	}
+	defer rows.Close()
+	falseVal := false
+	var items []AlfredItem
+	for rows.Next() {
+		var symbol string
+		rows.Scan(&symbol)
+		items = append(items, AlfredItem{
+			Title:        "🧬 " + symbol,
+			Subtitle:     "Select to filter by this gene",
+			Autocomplete: "--gene " + symbol + " ",
+			Valid:        &falseVal,
+			UID:          "pick:gene:" + symbol,
+		})
+	}
+	return items
+}
+
+func listPapers(db *sql.DB, q string) []AlfredItem {
+	var where string
+	var args []interface{}
+	if q != "" {
+		where, args = fuzzyWhere(q, []string{"p.citekey", "p.first_author", "p.title"})
+	} else {
+		where = "1=1"
+	}
+	rows, err := db.Query(`
+		SELECT p.citekey, p.first_author, p.year, p.title FROM papers p WHERE `+where+`
+		ORDER BY p.year DESC LIMIT 30`, args...)
+	if err != nil {
+		return nil
+	}
+	defer rows.Close()
+	falseVal := false
+	var items []AlfredItem
+	for rows.Next() {
+		var citekey string
+		var author, title sql.NullString
+		var year sql.NullInt64
+		rows.Scan(&citekey, &author, &year, &title)
+		display := citekey
+		if a := orEmpty(author); a != "" {
+			display = a
+			if year.Valid {
+				display += fmt.Sprintf(" (%d)", year.Int64)
+			}
+		}
+		if t := orEmpty(title); t != "" {
+			if len(t) > 50 {
+				t = t[:50] + "…"
+			}
+			display += " — " + t
+		}
+		items = append(items, AlfredItem{
+			Title:        "📄 " + display,
+			Subtitle:     "Select to filter by this paper",
+			Autocomplete: "--paper " + citekey + " ",
+			Valid:        &falseVal,
+			UID:          "pick:paper:" + citekey,
+		})
+	}
+	return items
+}
+
+func listTrials(db *sql.DB, q string) []AlfredItem {
+	var where string
+	var args []interface{}
+	if q != "" {
+		where, args = fuzzyWhere(q, []string{"ct.trial_name", "ct.drug", "ct.company"})
+	} else {
+		where = "1=1"
+	}
+	rows, err := db.Query(`
+		SELECT ct.trial_name FROM clinical_trials ct WHERE `+where+`
+		ORDER BY ct.trial_name LIMIT 30`, args...)
+	if err != nil {
+		return nil
+	}
+	defer rows.Close()
+	falseVal := false
+	var items []AlfredItem
+	for rows.Next() {
+		var name string
+		rows.Scan(&name)
+		items = append(items, AlfredItem{
+			Title:        "💊 " + name,
+			Subtitle:     "Select to filter by this trial",
+			Autocomplete: "--trial " + name + " ",
+			Valid:        &falseVal,
+			UID:          "pick:trial:" + name,
+		})
+	}
+	return items
+}
+
+func listStrategies(db *sql.DB, q string) []AlfredItem {
+	var where string
+	var args []interface{}
+	if q != "" {
+		where, args = fuzzyWhere(q, []string{"ts.name", "ts.modality"})
+	} else {
+		where = "1=1"
+	}
+	rows, err := db.Query(`
+		SELECT ts.name FROM therapeutic_strategies ts WHERE `+where+`
+		ORDER BY ts.name LIMIT 30`, args...)
+	if err != nil {
+		return nil
+	}
+	defer rows.Close()
+	falseVal := false
+	var items []AlfredItem
+	for rows.Next() {
+		var name string
+		rows.Scan(&name)
+		items = append(items, AlfredItem{
+			Title:        "🎯 " + name,
+			Subtitle:     "Select to filter by this strategy",
+			Autocomplete: "--strategy " + name + " ",
+			Valid:        &falseVal,
+			UID:          "pick:strategy:" + name,
+		})
+	}
+	return items
+}
+
+func listZettels(db *sql.DB, q string) []AlfredItem {
+	var where string
+	var args []interface{}
+	if q != "" {
+		where, args = fuzzyWhere(q, []string{"z.fact", "z.category"})
+	} else {
+		where = "1=1"
+	}
+	rows, err := db.Query(`
+		SELECT z.fact FROM zettels z WHERE `+where+`
+		ORDER BY z.fact LIMIT 30`, args...)
+	if err != nil {
+		return nil
+	}
+	defer rows.Close()
+	falseVal := false
+	var items []AlfredItem
+	for rows.Next() {
+		var fact string
+		rows.Scan(&fact)
+		items = append(items, AlfredItem{
+			Title:        "📝 " + fact,
+			Subtitle:     "Select to filter by this zettel",
+			Autocomplete: "--zettel " + fact + " ",
+			Valid:        &falseVal,
+			UID:          "pick:zettel:" + fact,
+		})
+	}
+	return items
+}
+
+// splitEntityAndQuery tries to split "Alzheimer's Disease prevalence gwas"
+// into (entity="Alzheimer's Disease", query="prevalence gwas") by finding the
+// longest prefix that matches an actual entity name in the DB.
+func splitEntityAndQuery(db *sql.DB, flagName, fullVal string) (entity, query string) {
+	if fullVal == "" {
+		return "", ""
+	}
+	table := ""
+	col := ""
+	switch flagName {
+	case "disease":
+		table, col = "diseases", "name"
+	case "gene":
+		table, col = "genes", "symbol"
+	case "paper":
+		table, col = "papers", "citekey"
+	case "trial":
+		table, col = "clinical_trials", "trial_name"
+	case "strategy":
+		table, col = "therapeutic_strategies", "name"
+	case "zettel":
+		table, col = "zettels", "fact"
+	default:
+		return fullVal, ""
+	}
+
+	words := strings.Fields(fullVal)
+	// Try longest prefix first (all words), then shrink
+	for n := len(words); n >= 1; n-- {
+		candidate := strings.Join(words[:n], " ")
+		var count int
+		db.QueryRow("SELECT COUNT(*) FROM "+table+" WHERE "+col+" = ?", candidate).Scan(&count)
+		if count > 0 {
+			rest := strings.TrimSpace(strings.Join(words[n:], " "))
+			return candidate, rest
+		}
+	}
+	// No exact match — treat everything as a fuzzy query
+	return "", fullVal
+}
+
+// filterExactEntity removes same-type results whose UID doesn't match the
+// exact entity name. E.g. for --disease ALS, drop disease:PSP but keep
+// paper:* and prop:ALS:*.
+func filterExactEntity(items []AlfredItem, flagName, entity string) []AlfredItem {
+	prefix := flagName + ":"
+	if flagName == "trial" {
+		prefix = "trial:"
+	}
+	var filtered []AlfredItem
+	for _, it := range items {
+		if strings.HasPrefix(it.UID, prefix) {
+			// Same entity type — keep only if UID matches exactly
+			if it.UID == prefix+entity {
+				filtered = append(filtered, it)
+			}
+		} else {
+			// Different type (property, paper, etc.) — always keep
+			filtered = append(filtered, it)
+		}
+	}
+	return filtered
+}
+
+// parseFlags extracts --flag value pairs from query, returns remaining text and flag map
+func parseFlags(raw string) (remaining string, flags map[string]string) {
+	flags = make(map[string]string)
+	parts := strings.Fields(raw)
+	var rest []string
+	i := 0
+	for i < len(parts) {
+		if strings.HasPrefix(parts[i], "--") {
+			flagName := strings.TrimPrefix(parts[i], "--")
+			valid := false
+			for _, f := range flagDefs {
+				if f.flag == flagName {
+					valid = true
+					break
+				}
+			}
+			if valid && i+1 < len(parts) && !strings.HasPrefix(parts[i+1], "--") {
+				// Collect all value words until next flag or end
+				var valParts []string
+				i++
+				for i < len(parts) && !strings.HasPrefix(parts[i], "--") {
+					valParts = append(valParts, parts[i])
+					i++
+				}
+				flags[flagName] = strings.Join(valParts, " ")
+				continue
+			} else if valid {
+				flags[flagName] = ""
+				i++
+				continue
+			}
+		}
+		rest = append(rest, parts[i])
+		i++
+	}
+	remaining = strings.Join(rest, " ")
+	return
 }
 
 // Build an item where Enter = note text, Shift+Enter = open in Obsidian
@@ -1224,12 +1636,12 @@ func main() {
 					total := len(items)
 					for i := range items {
 						if items[i].Subtitle != "" {
-							items[i].Subtitle = fmt.Sprintf("%d/%d %s", i+1, total, items[i].Subtitle)
+							items[i].Subtitle = fmt.Sprintf("%s/%s %s", commaFmt(int64(i+1)), commaFmt(int64(total)), items[i].Subtitle)
 						} else {
-							items[i].Subtitle = fmt.Sprintf("%d/%d", i+1, total)
+							items[i].Subtitle = fmt.Sprintf("%s/%s", commaFmt(int64(i+1)), commaFmt(int64(total)))
 						}
 					}
-					output := AlfredOutput{Items: items}
+					output := AlfredOutput{Items: items, SkipKnowledge: true}
 					enc := json.NewEncoder(os.Stdout)
 					enc.SetEscapeHTML(false)
 					enc.Encode(output)
@@ -1245,12 +1657,12 @@ func main() {
 			total := len(items)
 			for i := range items {
 				if items[i].Subtitle != "" {
-					items[i].Subtitle = fmt.Sprintf("%d/%d %s", i+1, total, items[i].Subtitle)
+					items[i].Subtitle = fmt.Sprintf("%s/%s %s", commaFmt(int64(i+1)), commaFmt(int64(total)), items[i].Subtitle)
 				} else {
-					items[i].Subtitle = fmt.Sprintf("%d/%d", i+1, total)
+					items[i].Subtitle = fmt.Sprintf("%s/%s", commaFmt(int64(i+1)), commaFmt(int64(total)))
 				}
 			}
-			output := AlfredOutput{Items: items}
+			output := AlfredOutput{Items: items, SkipKnowledge: true}
 			enc := json.NewEncoder(os.Stdout)
 			enc.SetEscapeHTML(false)
 			enc.Encode(output)
@@ -1259,63 +1671,109 @@ func main() {
 	}
 
 	raw := strings.Join(os.Args[1:], " ")
+
+	// Legacy --zk alias
 	if strings.HasPrefix(raw, "--zk ") {
 		raw = "zk:" + raw[5:]
 	} else if raw == "--zk" {
 		raw = "zk:"
 	}
 
-	filter, query := parseQuery(raw)
-
 	var items []AlfredItem
 
-	if query == "" && filter == "" {
-		items = append(items, AlfredItem{
-			Title:    "Search QAK knowledge base…",
-			Subtitle: "↵ copy text · ⇧↵ open Obsidian · ⌘L large type — Tags: d: g: p: t: s: z:",
-		})
-	} else if query == "" && filter != "" {
-		items = append(items, AlfredItem{
-			Title:    fmt.Sprintf("Search %ss…", filter),
-			Subtitle: fmt.Sprintf("Type a keyword after %s:", filter),
-		})
+	// Flag autocomplete: user is typing "--" or "--dis..." → show flag options
+	if isTypingFlag(raw) || isPartialFlag(raw) {
+		items = buildFlagSuggestions(raw)
+		if len(items) == 0 {
+			items = append(items, AlfredItem{
+				Title:    "Unknown flag",
+				Subtitle: "Available: --disease --gene --paper --trial --strategy --zettel",
+			})
+		}
+	} else if strings.Contains(raw, "--") {
+		_, flags := parseFlags(raw)
+
+		if len(flags) == 1 {
+			for flagName, flagVal := range flags {
+				if flagVal == "" {
+					// Just selected the flag, no value yet → show entity list
+					items = listEntityValues(db, flagName, "")
+				} else {
+					// Try to split "ALS prevalence" into entity="ALS" + query="prevalence"
+					entity, extra := splitEntityAndQuery(db, flagName, flagVal)
+
+					if entity != "" {
+						// Exact entity match found — search using a
+						// simplified form of the entity name (first word
+						// only, avoids multi-word/parenthesis issues) plus
+						// any extra search terms.
+						shortName := strings.Fields(entity)[0]
+						q := shortName
+						if extra != "" {
+							q = shortName + " " + extra
+						}
+						items = searchAll(db, q)
+						items = filterExactEntity(items, flagName, entity)
+					} else {
+						// No exact entity match → broad search across all types
+						items = searchAll(db, flagVal)
+					}
+				}
+			}
+		}
 	} else {
-		switch filter {
-		case "disease":
-			items = searchDiseases(db, query)
-		case "gene":
-			items = searchGenes(db, query)
-		case "paper":
-			items = searchPapers(db, query)
-		case "trial":
-			items = searchTrials(db, query)
-		case "strategy":
-			items = searchStrategies(db, query)
-		case "zettel":
-			items = searchZettels(db, query)
-		default:
-			items = searchAll(db, query)
+		// Original colon-prefix system still works
+		filter, query := parseQuery(raw)
+
+		if query == "" && filter == "" {
+			items = append(items, AlfredItem{
+				Title:    "Search QAK knowledge base…",
+				Subtitle: "Type -- for filters · d: g: p: t: s: z: also work",
+			})
+		} else if query == "" && filter != "" {
+			items = append(items, AlfredItem{
+				Title:    fmt.Sprintf("Search %ss…", filter),
+				Subtitle: fmt.Sprintf("Type a keyword after %s:", filter),
+			})
+		} else {
+			switch filter {
+			case "disease":
+				items = searchDiseases(db, query)
+			case "gene":
+				items = searchGenes(db, query)
+			case "paper":
+				items = searchPapers(db, query)
+			case "trial":
+				items = searchTrials(db, query)
+			case "strategy":
+				items = searchStrategies(db, query)
+			case "zettel":
+				items = searchZettels(db, query)
+			default:
+				items = searchAll(db, query)
+			}
 		}
 	}
 
 	if len(items) == 0 {
 		items = append(items, AlfredItem{
 			Title:    "No results",
-			Subtitle: fmt.Sprintf("No matches for \"%s\"", query),
+			Subtitle: fmt.Sprintf("No matches for \"%s\"", raw),
 		})
 	}
 
-	// Add x/N counter to each subtitle
+	// Add x/N counter to each subtitle (position in display order, with thousands separator)
 	total := len(items)
 	for i := range items {
+		counter := fmt.Sprintf("%s/%s", commaFmt(int64(i+1)), commaFmt(int64(total)))
 		if items[i].Subtitle != "" {
-			items[i].Subtitle = fmt.Sprintf("%d/%d %s", i+1, total, items[i].Subtitle)
+			items[i].Subtitle = counter + " " + items[i].Subtitle
 		} else {
-			items[i].Subtitle = fmt.Sprintf("%d/%d", i+1, total)
+			items[i].Subtitle = counter
 		}
 	}
 
-	output := AlfredOutput{Items: items}
+	output := AlfredOutput{Items: items, SkipKnowledge: true}
 	enc := json.NewEncoder(os.Stdout)
 	enc.SetEscapeHTML(false)
 	enc.Encode(output)
