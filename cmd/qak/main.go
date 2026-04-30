@@ -7,6 +7,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 
@@ -163,6 +164,12 @@ func join(parts []string) string {
 	return strings.Join(nonEmpty, " · ")
 }
 
+var parenRe = regexp.MustCompile(`\s*\([^)]*\)\s*`)
+
+func stripParens(s string) string {
+	return strings.TrimSpace(parenRe.ReplaceAllString(s, " "))
+}
+
 func truncate(s string, max int) string {
 	if len(s) > max {
 		return s[:max] + "\n\n[truncated]"
@@ -298,7 +305,7 @@ func listDiseases(db *sql.DB, q string) []AlfredItem {
 		items = append(items, AlfredItem{
 			Title:        "🦠 " + name,
 			Subtitle:     "Select to filter by this disease",
-			Autocomplete: "--disease " + name + " ",
+			Autocomplete: "--disease " + stripParens(name) + " ",
 			Valid:        &falseVal,
 			UID:          "pick:disease:" + name,
 		})
@@ -407,7 +414,7 @@ func listTrials(db *sql.DB, q string) []AlfredItem {
 		items = append(items, AlfredItem{
 			Title:        "💊 " + name,
 			Subtitle:     "Select to filter by this trial",
-			Autocomplete: "--trial " + name + " ",
+			Autocomplete: "--trial " + stripParens(name) + " ",
 			Valid:        &falseVal,
 			UID:          "pick:trial:" + name,
 		})
@@ -438,7 +445,7 @@ func listStrategies(db *sql.DB, q string) []AlfredItem {
 		items = append(items, AlfredItem{
 			Title:        "🎯 " + name,
 			Subtitle:     "Select to filter by this strategy",
-			Autocomplete: "--strategy " + name + " ",
+			Autocomplete: "--strategy " + stripParens(name) + " ",
 			Valid:        &falseVal,
 			UID:          "pick:strategy:" + name,
 		})
@@ -469,7 +476,7 @@ func listZettels(db *sql.DB, q string) []AlfredItem {
 		items = append(items, AlfredItem{
 			Title:        "📝 " + fact,
 			Subtitle:     "Select to filter by this zettel",
-			Autocomplete: "--zettel " + fact + " ",
+			Autocomplete: "--zettel " + stripParens(fact) + " ",
 			Valid:        &falseVal,
 			UID:          "pick:zettel:" + fact,
 		})
@@ -504,17 +511,23 @@ func splitEntityAndQuery(db *sql.DB, flagName, fullVal string) (entity, query st
 	}
 
 	words := strings.Fields(fullVal)
-	// Try longest prefix first (all words), then shrink
+	// Try longest prefix first (all words), then shrink.
+	// For each candidate, try exact match first, then prefix match
+	// (handles stripped parentheses: "Huntington's Disease" → "Huntington's Disease (HD)")
 	for n := len(words); n >= 1; n-- {
 		candidate := strings.Join(words[:n], " ")
-		var count int
-		db.QueryRow("SELECT COUNT(*) FROM "+table+" WHERE "+col+" = ?", candidate).Scan(&count)
-		if count > 0 {
+		var matched string
+		err := db.QueryRow("SELECT "+col+" FROM "+table+" WHERE "+col+" = ?", candidate).Scan(&matched)
+		if err == nil {
 			rest := strings.TrimSpace(strings.Join(words[n:], " "))
-			return candidate, rest
+			return matched, rest
+		}
+		err = db.QueryRow("SELECT "+col+" FROM "+table+" WHERE "+col+" LIKE ?", candidate+" %").Scan(&matched)
+		if err == nil {
+			rest := strings.TrimSpace(strings.Join(words[n:], " "))
+			return matched, rest
 		}
 	}
-	// No exact match — treat everything as a fuzzy query
 	return "", fullVal
 }
 
@@ -1696,27 +1709,26 @@ func main() {
 		if len(flags) == 1 {
 			for flagName, flagVal := range flags {
 				if flagVal == "" {
-					// Just selected the flag, no value yet → show entity list
 					items = listEntityValues(db, flagName, "")
 				} else {
-					// Try to split "ALS prevalence" into entity="ALS" + query="prevalence"
 					entity, extra := splitEntityAndQuery(db, flagName, flagVal)
 
-					if entity != "" {
-						// Exact entity match found — search using a
-						// simplified form of the entity name (first word
-						// only, avoids multi-word/parenthesis issues) plus
-						// any extra search terms.
+					if entity != "" && extra != "" {
 						shortName := strings.Fields(entity)[0]
-						q := shortName
-						if extra != "" {
-							q = shortName + " " + extra
-						}
-						items = searchAll(db, q)
+						items = searchAll(db, shortName+" "+extra)
+						items = filterExactEntity(items, flagName, entity)
+					} else if entity != "" {
+						shortName := strings.Fields(entity)[0]
+						items = searchAll(db, shortName)
 						items = filterExactEntity(items, flagName, entity)
 					} else {
-						// No exact entity match → broad search across all types
-						items = searchAll(db, flagVal)
+						// No entity resolved — show filtered entity picker
+						picks := listEntityValues(db, flagName, flagVal)
+						if len(picks) > 0 {
+							items = picks
+						} else {
+							items = searchAll(db, flagVal)
+						}
 					}
 				}
 			}
@@ -1760,6 +1772,14 @@ func main() {
 			Title:    "No results",
 			Subtitle: fmt.Sprintf("No matches for \"%s\"", raw),
 		})
+	}
+
+	// Clear UIDs on actionable items so Alfred cannot reorder by selection history.
+	// Keep UIDs on picker items (valid=false) for dedup.
+	for i := range items {
+		if items[i].Valid == nil || *items[i].Valid {
+			items[i].UID = ""
+		}
 	}
 
 	// Add x/N counter to each subtitle (position in display order, with thousands separator)
