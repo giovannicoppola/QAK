@@ -1,0 +1,3 @@
+#!/bin/bash
+echo "$(date): args=[$*]" >> /tmp/qak-debug.log
+exec "$(dirname "$0")/qak" "$@"
